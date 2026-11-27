@@ -889,14 +889,37 @@ onMounted(() => {
                   }}
                 </p>
               </div>
-              <button
-                type="button"
-                class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                @click="openEditHost(selectedHost)"
-              >
-                <Edit3 class="h-3.5 w-3.5" />
-                编辑配置
-              </button>
+              <div class="flex flex-wrap items-center gap-2">
+                <template v-if="selectedHost.caddy_enabled">
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    @click="openContainerModal"
+                  >
+                    <Terminal class="h-3.5 w-3.5 text-slate-500" />
+                    容器状态与日志
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="reloading"
+                    title="不修改 Caddyfile，直接执行容器热重载"
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    @click="handleReloadOnly"
+                  >
+                    <RotateCcw class="h-3.5 w-3.5 text-sky-600" :class="reloading ? 'animate-spin' : ''" />
+                    仅重载 Caddy
+                  </button>
+                  <span class="mx-0.5 hidden h-4 w-px bg-slate-200 sm:inline-block" />
+                </template>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  @click="openEditHost(selectedHost)"
+                >
+                  <Edit3 class="h-3.5 w-3.5" />
+                  编辑配置
+                </button>
+              </div>
             </div>
 
             <div class="mt-4 flex gap-6">
@@ -1173,90 +1196,56 @@ onMounted(() => {
             </div>
 
             <div v-else class="space-y-4">
-              <!-- Toolbar: grouped cleanly into Host Config (Caddyfile) vs Docker Container -->
-              <div class="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span class="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200">
-                      <FileCode2 class="h-3.5 w-3.5 text-indigo-500" />
-                      主机配置 · Caddyfile
-                    </span>
-                    <button
-                      type="button"
-                      :disabled="caddyLoading"
-                      class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                      @click="loadCaddyfile"
-                    >
-                      <RefreshCw class="h-3.5 w-3.5" :class="caddyLoading ? 'animate-spin' : ''" />
-                      拉取线上
-                    </button>
-                    <button
-                      type="button"
-                      :disabled="formatting || caddyLoading"
-                      class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                      @click="handleFormat"
-                    >
-                      <Wand2 class="h-3.5 w-3.5" />
-                      {{ formatting ? '格式化中...' : '格式化 (fmt)' }}
-                    </button>
-                    <button
-                      type="button"
-                      :disabled="validating || caddyLoading"
-                      class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                      @click="handleValidate"
-                    >
-                      <CheckCircle2 class="h-3.5 w-3.5 text-emerald-600" />
-                      {{ validating ? '校验中...' : '预校验 (validate)' }}
-                    </button>
-                    <button
-                      type="button"
-                      class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                      @click="openSnapshotsModal"
-                    >
-                      <History class="h-3.5 w-3.5 text-slate-500" />
-                      历史快照
-                    </button>
-                  </div>
-
+              <!-- Toolbar (Caddyfile actions) -->
+              <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2.5">
+                <div class="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    :disabled="publishing || caddyLoading"
-                    title="写入宿主机 Caddyfile 并热重载 Caddy 容器"
-                    class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
-                    @click="handlePublish(false)"
+                    :disabled="caddyLoading"
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    @click="loadCaddyfile"
                   >
-                    <Save class="h-3.5 w-3.5" />
-                    {{ publishing ? '发布中...' : '保存并重载 (⌘S)' }}
+                    <RefreshCw class="h-3.5 w-3.5" :class="caddyLoading ? 'animate-spin' : ''" />
+                    拉取线上
                   </button>
-                </div>
-
-                <div class="flex flex-wrap items-center gap-2 border-t border-slate-200/80 pt-2.5">
-                  <span class="inline-flex items-center gap-1.5 rounded-md bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200">
-                    <Container class="h-3.5 w-3.5 text-sky-600" />
-                    Docker 容器
-                    <code class="font-mono text-[10px] font-normal text-slate-400">
-                      {{ selectedHost.caddy_container || 'caddy' }}
-                    </code>
-                  </span>
+                  <button
+                    type="button"
+                    :disabled="formatting || caddyLoading"
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    @click="handleFormat"
+                  >
+                    <Wand2 class="h-3.5 w-3.5" />
+                    {{ formatting ? '格式化中...' : '格式化 (fmt)' }}
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="validating || caddyLoading"
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    @click="handleValidate"
+                  >
+                    <CheckCircle2 class="h-3.5 w-3.5 text-emerald-600" />
+                    {{ validating ? '校验中...' : '预校验 (validate)' }}
+                  </button>
                   <button
                     type="button"
                     class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                    @click="openContainerModal"
+                    @click="openSnapshotsModal"
                   >
-                    <Terminal class="h-3.5 w-3.5 text-slate-500" />
-                    容器状态与日志
-                  </button>
-                  <button
-                    type="button"
-                    :disabled="reloading"
-                    title="不修改 Caddyfile，直接执行容器热重载"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                    @click="handleReloadOnly"
-                  >
-                    <RotateCcw class="h-3.5 w-3.5 text-sky-600" />
-                    仅重载 Caddy
+                    <History class="h-3.5 w-3.5 text-slate-500" />
+                    历史快照
                   </button>
                 </div>
+
+                <button
+                  type="button"
+                  :disabled="publishing || caddyLoading"
+                  title="写入宿主机 Caddyfile 并热重载 Caddy 容器"
+                  class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+                  @click="handlePublish(false)"
+                >
+                  <Save class="h-3.5 w-3.5" />
+                  {{ publishing ? '发布中...' : '保存并重载 (⌘S)' }}
+                </button>
               </div>
 
               <!-- Meta info + Summary input -->
