@@ -302,6 +302,17 @@ func TestFullAssembledRouterEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Missing Caddyfile should map to 404 NOT_FOUND rather than 500
+	localHostModel.CaddyEnabled = true
+	localHostModel.CaddyHostCaddyfile = filepath.Join(t.TempDir(), "missing-Caddyfile")
+	if err := database.UpdateHost(ctx, localHostModel); err != nil {
+		t.Fatal(err)
+	}
+	rec = doAuth(http.MethodGet, fmt.Sprintf("/api/v1/hosts/%d/caddy/caddyfile", localHostID), "", false)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing local caddyfile status=%d, want 404 body=%s", rec.Code, rec.Body.String())
+	}
+
 	localHostModel.CaddyEnabled = true
 	localHostModel.CaddyHostCaddyfile = localCaddyfile
 	if err := database.UpdateHost(ctx, localHostModel); err != nil {

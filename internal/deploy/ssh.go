@@ -68,7 +68,7 @@ func (t *Transport) testSSHConnection(ctx context.Context, host *model.Host) (*m
 	}
 
 	infoRes, infoErr := t.execOnSSHClient(ctx, client, "docker info --format '{{.ServerVersion}}'", nil)
-	if infoErr == nil && infoRes != nil && infoRes.ExitCode == 0 {
+	if isDockerDaemonAvailable(infoRes, infoErr) {
 		res.DockerOK = true
 		inspectCmd := fmt.Sprintf("docker inspect --format '{{.State.Running}}' %s", model.ShellQuote(container))
 		inspectRes, inspectErr := t.execOnSSHClient(ctx, client, inspectCmd, nil)
@@ -100,6 +100,9 @@ func (t *Transport) testSSHConnection(ctx context.Context, host *model.Host) (*m
 			detail = infoErr.Error()
 		} else if infoRes != nil {
 			detail = strings.TrimSpace(firstNonEmpty(infoRes.Stderr, infoRes.Stdout))
+		}
+		if detail == "" {
+			detail = "empty server version from docker info"
 		}
 		res.Message = fmt.Sprintf("SSH OK; Docker unavailable: %s", detail)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -75,7 +76,16 @@ func defaultLookupTXT(ctx context.Context, resolverAddr, fqdn string) ([]string,
 			return d.DialContext(dialCtx, network, addr)
 		},
 	}
-	return r.LookupTXT(ctx, host)
+	txts, err := r.LookupTXT(ctx, host)
+	if err != nil {
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) {
+			cp := *dnsErr
+			cp.Server = addr
+			return txts, &cp
+		}
+	}
+	return txts, err
 }
 
 // StageTracker tracks the 6 frozen ACME issuance stages and redacted live logs,

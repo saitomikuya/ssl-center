@@ -696,3 +696,16 @@ func startMockCFForIssuer(t *testing.T, expectedToken string) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+func TestDefaultLookupTXT_ReportsTargetResolverInError(t *testing.T) {
+	addr := startMockUDPDNSServer(t, func(qname string) []string {
+		return nil
+	})
+	_, err := defaultLookupTXT(context.Background(), addr, "_acme-challenge.missing.example.com.")
+	if err == nil {
+		t.Fatal("expected lookup error when mock DNS returns no TXT records")
+	}
+	if !strings.Contains(err.Error(), addr) {
+		t.Fatalf("expected error to reference queried resolver %q, got: %v", addr, err)
+	}
+}

@@ -34,7 +34,7 @@ func (t *Transport) testLocalConnection(ctx context.Context, host *model.Host) (
 		}
 
 		infoRes, infoErr := t.execLocal(ctx, "docker info --format '{{.ServerVersion}}'", nil)
-		if infoErr == nil && infoRes != nil && infoRes.ExitCode == 0 {
+		if isDockerDaemonAvailable(infoRes, infoErr) {
 			res.DockerOK = true
 			inspectCmd := fmt.Sprintf("docker inspect --format '{{.State.Running}}' %s", model.ShellQuote(container))
 			inspectRes, inspectErr := t.execLocal(ctx, inspectCmd, nil)
@@ -66,6 +66,9 @@ func (t *Transport) testLocalConnection(ctx context.Context, host *model.Host) (
 				detail = infoErr.Error()
 			} else if infoRes != nil {
 				detail = strings.TrimSpace(firstNonEmpty(infoRes.Stderr, infoRes.Stdout))
+			}
+			if detail == "" {
+				detail = "empty server version from docker info"
 			}
 			res.Message = fmt.Sprintf("Local host OK; Docker unavailable: %s", detail)
 		}
@@ -218,6 +221,10 @@ func (t *Transport) persistCheckResult(ctx context.Context, host *model.Host, ok
 		return
 	}
 	_ = t.db.UpdateHostCheckResult(ctx, host.ID, ok, msg, caddyStatus, time.Now().UTC())
+}
+
+func isDockerDaemonAvailable(res *model.ExecResult, err error) bool {
+	return err == nil && res != nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
 }
 
 func firstNonEmpty(values ...string) string {

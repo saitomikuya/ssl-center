@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 
 	"ssl-center/internal/caddy"
@@ -213,6 +214,8 @@ func mapCaddyError(w http.ResponseWriter, err error) {
 		Fail(w, http.StatusUnprocessableEntity, CodeCaddyValidateFailed, ve.Error(), ve.Details)
 	case errors.Is(err, db.ErrNotFound):
 		Fail(w, http.StatusNotFound, CodeNotFound, "Resource not found", nil)
+	case errors.Is(err, os.ErrNotExist):
+		Fail(w, http.StatusNotFound, CodeNotFound, err.Error(), nil)
 	case errors.Is(err, caddy.ErrCaddyDisabled), errors.Is(err, caddy.ErrSnapshotHostMismatch):
 		Fail(w, http.StatusBadRequest, CodeBadRequest, err.Error(), nil)
 	default:

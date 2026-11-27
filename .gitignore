@@ -18,5 +18,7 @@ tmp/
 web/node_modules/
 internal/web/dist/
 
-# Internal design / planning docs
-docs/
+# Internal design / planning docs & local test archives
+docs/PRD.md
+docs/API_CONTRACT.md
+ACME_*.tar.gz

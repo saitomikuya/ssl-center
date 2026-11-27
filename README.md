@@ -19,7 +19,7 @@
 ### 2. 多 CA 与多账号 DNS 管理
 - **多 CA 支持**：
   - **Let's Encrypt**：支持生产与 Staging 环境，填邮箱即可注册（免 EAB 开箱即用）。
-  - **Google Trust Services (GTS)**：支持 EAB（`keyId` + `b64MacKey`）首次注册，注册后立即销毁一次性 EAB 凭据不入库；支持已有 `acme.key` 在线校验导入与导出备份。
+  - **Google Trust Services (GTS)**：支持 EAB（`keyId` + `b64MacKey`）首次注册（参见 [GTS EAB 获取教程](docs/GTS_EAB_GUIDE.md)），注册后立即销毁一次性 EAB 凭据不入库；支持已有 `acme.key` 在线校验导入与导出备份。
 - **多账号 DNS-01 鉴权**：
   - 支持 **Cloudflare**（API Token）与 **华为云 DNS**（AK / SK + Region）多账号命名管理，支持「测试凭据」连通性校验与可见 Zone 拉取。
   - 添加证书时按最长后缀自动匹配对应 Zone（支持手动覆写），写入 `_acme-challenge` TXT 后等待权威/递归传播并在完成后精确清理，Zone 级互斥锁保护同根域与泛域名并发签发。

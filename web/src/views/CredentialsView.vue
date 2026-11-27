@@ -823,11 +823,29 @@ onMounted(() => {
           </div>
 
           <template v-if="gtsMode === 'eab'">
-            <p class="text-xs text-slate-500">
-              一次性 EAB 凭据仅用于完成 ACME 账户注册，注册成功后立即从内存销毁，不会写入数据库。
-            </p>
+            <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+              <span>一次性 EAB 凭据仅用于完成 ACME 账户注册，注册成功后立即从内存销毁，不会写入数据库。</span>
+              <a
+                href="https://github.com/saitomikuya/ssl-center/blob/main/docs/GTS_EAB_GUIDE.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex shrink-0 items-center gap-1 font-medium text-indigo-600 hover:text-indigo-700 hover:underline"
+              >
+                如何获取 EAB 凭据 ↗
+              </a>
+            </div>
             <div>
-              <label class="mb-1 block text-xs font-medium text-slate-700">EAB Key ID (eab_kid) *</label>
+              <div class="mb-1 flex items-center justify-between gap-2">
+                <label class="block text-xs font-medium text-slate-700">EAB Key ID (eab_kid) *</label>
+                <a
+                  href="https://github.com/saitomikuya/ssl-center/blob/main/docs/GTS_EAB_GUIDE.md"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-[11px] font-medium text-indigo-600 hover:text-indigo-700 hover:underline"
+                >
+                  查看获取教程 ↗
+                </a>
+              </div>
               <input
                 v-model="caForm.eab_kid"
                 type="text"
@@ -836,7 +854,17 @@ onMounted(() => {
               />
             </div>
             <div>
-              <label class="mb-1 block text-xs font-medium text-slate-700">EAB HMAC Key (eab_mac_key) *</label>
+              <div class="mb-1 flex items-center justify-between gap-2">
+                <label class="block text-xs font-medium text-slate-700">EAB HMAC Key (eab_mac_key) *</label>
+                <a
+                  href="https://github.com/saitomikuya/ssl-center/blob/main/docs/GTS_EAB_GUIDE.md"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-[11px] font-medium text-indigo-600 hover:text-indigo-700 hover:underline"
+                >
+                  查看获取教程 ↗
+                </a>
+              </div>
               <input
                 v-model="caForm.eab_mac_key"
                 type="password"

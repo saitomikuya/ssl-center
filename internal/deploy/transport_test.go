@@ -409,3 +409,34 @@ func TestLocalTransport_OperationsAndInode(t *testing.T) {
 		t.Fatalf("local RemoveFile: %v", err)
 	}
 }
+
+func TestSSHTransport_DockerInfoEmptyStdoutWithZeroExitMarksUnavailable(t *testing.T) {
+	ctx := context.Background()
+	database, cipher, redactor := setupTestDBAndCrypto(t)
+
+	privPEM, pubKey := generateClientSSHKeyPair(t, "")
+	srv := newMockSSHServer(t, pubKey, "")
+	srv.SetExecHandler(func(cmd string, stdin []byte) (string, string, int) {
+		if strings.Contains(cmd, "docker info") {
+			return "\n", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.", 0
+		}
+		return "", "", 1
+	})
+
+	tr := deploy.NewTransport(database, cipher, redactor, nil)
+	host := createSSHTestHost(t, database, cipher, srv, model.HostAuthKey, privPEM, "", "", model.HostKeyPolicyInsecure, "")
+
+	res, err := tr.TestConnection(ctx, host)
+	if err != nil {
+		t.Fatalf("TestConnection: %v", err)
+	}
+	if !res.SSHOK {
+		t.Fatalf("expected SSHOK=true, got %+v", res)
+	}
+	if res.DockerOK || res.CaddyRunning {
+		t.Fatalf("expected DockerOK=false and CaddyRunning=false, got %+v", res)
+	}
+	if !strings.Contains(res.Message, "Docker unavailable") || strings.Contains(res.Message, "Docker OK") {
+		t.Fatalf("unexpected message: %q", res.Message)
+	}
+}

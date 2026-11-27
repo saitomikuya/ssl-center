@@ -395,10 +395,12 @@ func (i *Issuer) obtainWithLego(
 		dns01.AddDNSTimeout(obsProvider.propCfg.Timeout),
 		dns01.WrapPreCheck(obsProvider.PreCheck),
 	}
+	// lego checks authoritative NS propagation by default; do not enable
+	// RecursiveNSsPropagationRequirement() because it sends RD=0 queries to
+	// recursive resolvers (rejected with SERVFAIL by 1.1.1.1), while
+	// WaitDNSPropagation already performs RD=1 recursive quorum checks.
 	if !obsProvider.propCfg.CheckAuthoritative {
 		opts = append(opts, dns01.DisableAuthoritativeNssPropagationRequirement())
-	} else {
-		opts = append(opts, dns01.RecursiveNSsPropagationRequirement())
 	}
 
 	if err := client.Challenge.SetDNS01Provider(obsProvider, opts...); err != nil {
