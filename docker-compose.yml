@@ -1,0 +1,28 @@
+services:
+  ssl-center:
+    image: saitomikuya/ssl-center:latest
+    # 如需使用 GitHub Container Registry 镜像，可替换为：
+    # image: ghcr.io/saitomikuya/ssl-center:latest
+    # 如需从本地源码构建，可取消下一行注释：
+    # build: .
+    container_name: ssl-center
+    restart: unless-stopped
+    stop_grace_period: 20s
+    ports:
+      # 生产环境建议配合反向代理，改为 "127.0.0.1:8080:8080"
+      - "8080:8080"
+    environment:
+      TZ: Asia/Shanghai
+      DATA_DIR: /data
+      LISTEN_ADDR: ":8080"
+      # 首次启动预设管理员密码（留空则自动生成 16 位随机密码并打印到容器日志，首次登录强制改密）
+      # INIT_PASSWORD: "ChangeMeStrongPass123!"
+      # INIT_FORCE_CHANGE: "false"
+      # 反向代理 HTTPS 终止时建议设为 TRUST_PROXY: "true"，COOKIE_SECURE 保持 "auto"
+      # COOKIE_SECURE: "auto"
+      # TRUST_PROXY: "false"
+      # LOG_LEVEL: "info"
+    volumes:
+      - ./data:/data
+      # 如需使用内置 Local 主机模式管理同宿主机 Caddy 容器，请取消下一行注释并按需挂载宿主机目录：
+      # - /var/run/docker.sock:/var/run/docker.sock

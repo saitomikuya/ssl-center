@@ -1,0 +1,16 @@
+.git
+.github/
+.DS_Store
+**/.DS_Store
+bin/
+data/
+docs/
+web/node_modules/
+internal/web/dist/
+*.db
+*.db-wal
+*.db-shm
+*.pem
+*.key
+.env
+.env.*

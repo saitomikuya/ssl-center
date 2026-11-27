@@ -1,0 +1,22 @@
+# OS & editor metadata
+.DS_Store
+**/.DS_Store
+
+# Secrets, keys, environment files, and runtime data
+*.pem
+*.key
+*.db
+*.db-wal
+*.db-shm
+data/
+.env
+.env.*
+
+# Build outputs, dependencies, and temporary files
+bin/
+tmp/
+web/node_modules/
+internal/web/dist/
+
+# Internal design / planning docs
+docs/
