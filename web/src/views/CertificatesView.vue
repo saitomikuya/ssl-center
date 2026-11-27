@@ -610,7 +610,7 @@ function applyDeploymentDefaultsForHost(hostId: number, template: DeployTemplate
   }
 
   if (template === 'caddy_docker') {
-    deployForm.reload_mode = host.is_local ? 'caddy_admin_api' : 'docker_exec'
+    deployForm.reload_mode = 'docker_exec'
     const container = host.caddy_container || 'caddy'
     const caddyfile = host.caddy_container_caddyfile || '/etc/caddy/Caddyfile'
     deployForm.reload_command = `docker exec '${container}' caddy reload --config '${caddyfile}' --force`
@@ -635,7 +635,8 @@ function openCreateDeployment() {
   if (!selectedCert.value) return
   editingDeploy.value = null
   const firstHost = hosts.value.find((h) => !h.is_local) || hosts.value[0]
-  const defaultTemplate: DeployTemplate = firstHost?.is_local ? 'local_dir' : 'caddy_docker'
+  const defaultTemplate: DeployTemplate =
+    firstHost?.is_local && !firstHost.caddy_enabled ? 'local_dir' : 'caddy_docker'
   Object.assign(deployForm, {
     host_id: firstHost?.id || 0,
     name: '',
@@ -1625,11 +1626,29 @@ onUnmounted(() => {
             </div>
             <div v-if="deployForm.reload_mode === 'webhook'" class="sm:col-span-2">
               <label class="mb-1 block text-[11px] font-medium text-slate-600">Reload Webhook URL</label>
-              <input v-model="deployForm.reload_webhook_url" type="url" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+              <input
+                v-model="deployForm.reload_webhook_url"
+                type="url"
+                placeholder="https://example.com/hooks/reload"
+                class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
+              />
+            </div>
+            <div v-else-if="deployForm.reload_mode === 'caddy_admin_api'" class="sm:col-span-2">
+              <label class="mb-1 block text-[11px] font-medium text-slate-600">Caddy Admin API 地址</label>
+              <input
+                v-model="deployForm.reload_webhook_url"
+                type="url"
+                placeholder="留空默认 http://127.0.0.1:2019/load"
+                class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
+              />
             </div>
             <div v-else-if="deployForm.reload_mode !== 'none'" class="sm:col-span-2">
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">重载命令 / Admin API 地址</label>
-              <input v-model="deployForm.reload_command" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+              <label class="mb-1 block text-[11px] font-medium text-slate-600">重载命令</label>
+              <input
+                v-model="deployForm.reload_command"
+                type="text"
+                class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
+              />
             </div>
           </div>
         </div>
