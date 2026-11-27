@@ -2,10 +2,8 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Activity,
   KeyRound,
   LayoutDashboard,
-  Lock,
   LogOut,
   Menu,
   Server,
@@ -13,7 +11,7 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-vue-next'
-import { authState, clearAuthState } from '@/stores/auth'
+import { clearAuthState } from '@/stores/auth'
 import { toastState } from '@/stores/toast'
 import { logout } from '@/api/auth'
 import { showToast } from '@/stores/toast'
@@ -108,39 +106,16 @@ async function handleLogout() {
         </router-link>
       </nav>
 
-      <div class="shrink-0 border-t border-slate-200 p-4">
-        <div class="mb-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-          <div class="flex items-center justify-between">
-            <span class="font-medium text-slate-700">管理员会话</span>
-            <span class="inline-flex items-center gap-1 text-emerald-600">
-              <Activity class="h-3 w-3" />
-              在线
-            </span>
-          </div>
-          <div class="mt-1 font-mono text-[11px] text-slate-500 tabular-nums">
-            IP: {{ authState.ip || '未知' }}
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2">
-          <router-link
-            to="/change-password"
-            class="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-            @click="mobileOpen = false"
-          >
-            <Lock class="h-3.5 w-3.5 text-slate-400" />
-            改密
-          </router-link>
-          <button
-            type="button"
-            class="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
-            :disabled="loggingOut"
-            @click="handleLogout"
-          >
-            <LogOut class="h-3.5 w-3.5" />
-            退出
-          </button>
-        </div>
+      <div class="shrink-0 border-t border-slate-200 p-3">
+        <button
+          type="button"
+          class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+          :disabled="loggingOut"
+          @click="handleLogout"
+        >
+          <LogOut class="h-4 w-4 shrink-0" />
+          <span>{{ loggingOut ? '正在退出...' : '退出登录' }}</span>
+        </button>
       </div>
     </aside>
 
