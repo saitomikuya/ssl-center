@@ -27,6 +27,18 @@ const (
 	huaweiSignAlgorithm       = "SDK-HMAC-SHA256"
 )
 
+func normalizeHuaweiRegion(raw string) string {
+	r := strings.TrimSpace(raw)
+	switch strings.ToLower(r) {
+	case "", "domestic", "cn", "china":
+		return "cn-north-4"
+	case "international", "intl", "global":
+		return "ap-southeast-1"
+	default:
+		return r
+	}
+}
+
 // HuaweiCloudProvider implements DNSProvider for Huawei Cloud DNS v2
 // with authentic SDK-HMAC-SHA256 request signing and per-zone mutex TXT read-modify-write.
 type HuaweiCloudProvider struct {
@@ -44,9 +56,7 @@ type HuaweiCloudProvider struct {
 
 // NewHuaweiCloudProvider constructs a HuaweiCloudProvider with injectable baseURL, httpClient, and lock registry.
 func NewHuaweiCloudProvider(accessKey, secretKey, region, baseURL string, httpClient *http.Client, locks *zoneLockRegistry) *HuaweiCloudProvider {
-	if strings.TrimSpace(region) == "" {
-		region = "cn-north-4"
-	}
+	region = normalizeHuaweiRegion(region)
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = fmt.Sprintf("https://dns.%s.myhuaweicloud.com", region)
 	}

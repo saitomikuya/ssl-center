@@ -255,14 +255,46 @@ const dnsModalOpen = ref(false)
 const dnsEditing = ref<DNSCredentialDTO | null>(null)
 const dnsSubmitting = ref(false)
 
+const HUAWEI_REGION_DOMESTIC = 'cn-north-4'
+const HUAWEI_REGION_INTERNATIONAL = 'ap-southeast-1'
+type HuaweiEdition = 'domestic' | 'international' | 'custom'
+const huaweiEdition = ref<HuaweiEdition>('domestic')
+
 const dnsForm = reactive({
   name: '',
   provider: 'cloudflare' as DNSProvider,
   api_token: '',
   access_key: '',
   secret_key: '',
-  region: 'cn-north-4',
+  region: HUAWEI_REGION_DOMESTIC,
 })
+
+function resolveHuaweiRegion(): string {
+  if (huaweiEdition.value === 'domestic') return HUAWEI_REGION_DOMESTIC
+  if (huaweiEdition.value === 'international') return HUAWEI_REGION_INTERNATIONAL
+  return dnsForm.region.trim()
+}
+
+function selectHuaweiEdition(edition: HuaweiEdition) {
+  huaweiEdition.value = edition
+  if (edition === 'domestic') {
+    dnsForm.region = HUAWEI_REGION_DOMESTIC
+  } else if (edition === 'international') {
+    dnsForm.region = HUAWEI_REGION_INTERNATIONAL
+  } else if (
+    dnsForm.region === HUAWEI_REGION_DOMESTIC ||
+    dnsForm.region === HUAWEI_REGION_INTERNATIONAL
+  ) {
+    dnsForm.region = ''
+  }
+}
+
+function formatHuaweiRegionLabel(region?: string): string {
+  const r = (region || '').trim()
+  if (r === HUAWEI_REGION_DOMESTIC) return `国内版 (${HUAWEI_REGION_DOMESTIC})`
+  if (r === HUAWEI_REGION_INTERNATIONAL) return `国际版 (${HUAWEI_REGION_INTERNATIONAL})`
+  return r
+}
 
 // DNS Test & Zone Match Modal
 const dnsTestModalOpen = ref(false)
@@ -288,26 +320,35 @@ async function loadDNS() {
 
 function openCreateDNS() {
   dnsEditing.value = null
+  huaweiEdition.value = 'domestic'
   Object.assign(dnsForm, {
     name: '',
     provider: 'cloudflare',
     api_token: '',
     access_key: '',
     secret_key: '',
-    region: 'cn-north-4',
+    region: HUAWEI_REGION_DOMESTIC,
   })
   dnsModalOpen.value = true
 }
 
 function openEditDNS(item: DNSCredentialDTO) {
   dnsEditing.value = item
+  const region = (item.region || '').trim()
+  if (!region || region === HUAWEI_REGION_DOMESTIC) {
+    huaweiEdition.value = 'domestic'
+  } else if (region === HUAWEI_REGION_INTERNATIONAL) {
+    huaweiEdition.value = 'international'
+  } else {
+    huaweiEdition.value = 'custom'
+  }
   Object.assign(dnsForm, {
     name: item.name,
     provider: item.provider as DNSProvider,
     api_token: '',
     access_key: '',
     secret_key: '',
-    region: item.region || 'cn-north-4',
+    region: region || HUAWEI_REGION_DOMESTIC,
   })
   dnsModalOpen.value = true
 }
@@ -315,6 +356,19 @@ function openEditDNS(item: DNSCredentialDTO) {
 async function submitDNS() {
   if (!dnsForm.name.trim()) {
     showToast('warning', '请填写凭据名称')
+    return
+  }
+
+  const huaweiRegion = resolveHuaweiRegion()
+  if (dnsForm.provider === 'huaweicloud' && !huaweiRegion) {
+    showToast(
+      'warning',
+      huaweiEdition.value === 'custom'
+        ? '请填写自定义 Region'
+        : dnsEditing.value
+          ? '请选择华为云版本'
+          : '请填写华为云 AK、SK 与 Region',
+    )
     return
   }
 
@@ -335,7 +389,7 @@ async function submitDNS() {
           dnsForm.provider === 'huaweicloud' && dnsForm.secret_key.trim()
             ? dnsForm.secret_key.trim()
             : undefined,
-        region: dnsForm.provider === 'huaweicloud' ? dnsForm.region.trim() : undefined,
+        region: dnsForm.provider === 'huaweicloud' ? huaweiRegion : undefined,
       })
       showToast('success', 'DNS 凭据已更新')
     } else {
@@ -346,9 +400,12 @@ async function submitDNS() {
       }
       if (
         dnsForm.provider === 'huaweicloud' &&
-        (!dnsForm.access_key.trim() || !dnsForm.secret_key.trim() || !dnsForm.region.trim())
+        (!dnsForm.access_key.trim() || !dnsForm.secret_key.trim() || !huaweiRegion)
       ) {
-        showToast('warning', '请填写华为云 AK、SK 与 Region')
+        showToast(
+          'warning',
+          huaweiEdition.value === 'custom' ? '请填写华为云 AK、SK 与自定义 Region' : '请填写华为云 AK 与 SK',
+        )
         dnsSubmitting.value = false
         return
       }
@@ -358,7 +415,7 @@ async function submitDNS() {
         api_token: dnsForm.provider === 'cloudflare' ? dnsForm.api_token.trim() : undefined,
         access_key: dnsForm.provider === 'huaweicloud' ? dnsForm.access_key.trim() : undefined,
         secret_key: dnsForm.provider === 'huaweicloud' ? dnsForm.secret_key.trim() : undefined,
-        region: dnsForm.provider === 'huaweicloud' ? dnsForm.region.trim() : undefined,
+        region: dnsForm.provider === 'huaweicloud' ? huaweiRegion : undefined,
       })
       showToast('success', 'DNS 凭据创建成功')
     }
@@ -700,7 +757,7 @@ onMounted(() => {
                     {{ dns.provider === 'cloudflare' ? 'Cloudflare DNS' : '华为云 DNS' }}
                   </span>
                   <span v-if="dns.region" class="rounded bg-slate-100 px-2 py-0.5 font-mono text-slate-600">
-                    {{ dns.region }}
+                    {{ formatHuaweiRegionLabel(dns.region) }}
                   </span>
                   <span v-if="dns.has_secret" class="rounded bg-emerald-50 px-2 py-0.5 text-emerald-700">
                     密钥已加密存储
@@ -1016,12 +1073,57 @@ onMounted(() => {
             />
           </div>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">Region *</label>
+            <label class="mb-1.5 block text-xs font-medium text-slate-700">华为云版本 *</label>
+            <div class="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                class="rounded-lg border px-3 py-2 text-left transition"
+                :class="
+                  huaweiEdition === 'domestic'
+                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/20'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                "
+                @click="selectHuaweiEdition('domestic')"
+              >
+                <div class="text-xs font-semibold">国内版</div>
+                <div class="mt-0.5 text-[11px] opacity-75">中国大陆</div>
+              </button>
+              <button
+                type="button"
+                class="rounded-lg border px-3 py-2 text-left transition"
+                :class="
+                  huaweiEdition === 'international'
+                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/20'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                "
+                @click="selectHuaweiEdition('international')"
+              >
+                <div class="text-xs font-semibold">国际版</div>
+                <div class="mt-0.5 text-[11px] opacity-75">海外 / 港澳台</div>
+              </button>
+              <button
+                type="button"
+                class="rounded-lg border px-3 py-2 text-left transition"
+                :class="
+                  huaweiEdition === 'custom'
+                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/20'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                "
+                @click="selectHuaweiEdition('custom')"
+              >
+                <div class="text-xs font-semibold">自定义</div>
+                <div class="mt-0.5 text-[11px] opacity-75">手动指定 Region</div>
+              </button>
+            </div>
+            <p v-if="huaweiEdition !== 'custom'" class="mt-1.5 font-mono text-[11px] text-slate-500">
+              自动使用 Region：{{ resolveHuaweiRegion() }}（dns.{{ resolveHuaweiRegion() }}.myhuaweicloud.com）
+            </p>
             <input
+              v-else
               v-model="dnsForm.region"
               type="text"
-              placeholder="例如：cn-north-4 / ap-southeast-1"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs focus:border-indigo-500 focus:outline-none"
+              placeholder="例如：cn-east-3 / ap-southeast-3"
+              class="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs focus:border-indigo-500 focus:outline-none"
             />
           </div>
         </template>

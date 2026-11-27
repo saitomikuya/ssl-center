@@ -554,3 +554,28 @@ func TestDNSService_PartialSecretUpdate_Test_And_Redaction(t *testing.T) {
 		t.Fatal("expected old rotated-out token to be removed from SecretRedactor")
 	}
 }
+
+func TestNormalizeHuaweiRegion(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", "cn-north-4"},
+		{"  ", "cn-north-4"},
+		{"domestic", "cn-north-4"},
+		{"CN", "cn-north-4"},
+		{"china", "cn-north-4"},
+		{"international", "ap-southeast-1"},
+		{"INTL", "ap-southeast-1"},
+		{"global", "ap-southeast-1"},
+		{"cn-north-4", "cn-north-4"},
+		{"ap-southeast-1", "ap-southeast-1"},
+		{" cn-east-3 ", "cn-east-3"},
+	}
+
+	for _, tc := range cases {
+		if got := normalizeHuaweiRegion(tc.in); got != tc.want {
+			t.Errorf("normalizeHuaweiRegion(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

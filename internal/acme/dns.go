@@ -196,10 +196,7 @@ func (s *DNSService) CreateCredential(ctx context.Context, req model.CreateDNSRe
 	case model.DNSProviderHuaweiCloud:
 		ak := strings.TrimSpace(req.AccessKey)
 		sk := strings.TrimSpace(req.SecretKey)
-		region = strings.TrimSpace(req.Region)
-		if region == "" {
-			region = "cn-north-4"
-		}
+		region = normalizeHuaweiRegion(req.Region)
 		if ak == "" || sk == "" {
 			return nil, fmt.Errorf("%w: access_key and secret_key are required for huaweicloud", ErrInvalidDNSInput)
 		}
@@ -329,7 +326,7 @@ func (s *DNSService) UpdateCredential(ctx context.Context, id int64, req model.U
 			}
 		}
 		if req.Region != nil && strings.TrimSpace(*req.Region) != "" {
-			cfg.Region = strings.TrimSpace(*req.Region)
+			cfg.Region = normalizeHuaweiRegion(*req.Region)
 		}
 		region = cfg.Region
 		configJSON, err = json.Marshal(cfg)
@@ -468,14 +465,11 @@ func (s *DNSService) BuildProvider(ctx context.Context, id int64, zoneOverride s
 			return nil, fmt.Errorf("parse huaweicloud config: %w", err)
 		}
 		baseURL := s.huaweiBaseURL
+		region := normalizeHuaweiRegion(cfg.Region)
 		if baseURL == "" {
-			region := cfg.Region
-			if region == "" {
-				region = "cn-north-4"
-			}
 			baseURL = fmt.Sprintf("https://dns.%s.myhuaweicloud.com", region)
 		}
-		p := NewHuaweiCloudProvider(cfg.AccessKey, cfg.SecretKey, cfg.Region, baseURL, s.httpClient, s.huaweiLocks)
+		p := NewHuaweiCloudProvider(cfg.AccessKey, cfg.SecretKey, region, baseURL, s.httpClient, s.huaweiLocks)
 		p.SetZoneOverride(zoneOverride)
 		return p, nil
 	default:

@@ -21,7 +21,7 @@
   - **Let's Encrypt**：支持生产与 Staging 环境，填邮箱即可注册（免 EAB 开箱即用）。
   - **Google Trust Services (GTS)**：支持 EAB（`keyId` + `b64MacKey`）首次注册（参见 [GTS EAB 获取教程](docs/GTS_EAB_GUIDE.md)），注册后立即销毁一次性 EAB 凭据不入库；支持已有 `acme.key` 在线校验导入与导出备份。
 - **多账号 DNS-01 鉴权**：
-  - 支持 **Cloudflare**（API Token）与 **华为云 DNS**（AK / SK + Region）多账号命名管理，支持「测试凭据」连通性校验与可见 Zone 拉取。
+  - 支持 **Cloudflare**（API Token）与 **华为云 DNS**（AK / SK，支持国内版 / 国际版自动匹配 Region 或自定义）多账号命名管理，支持「测试凭据」连通性校验与可见 Zone 拉取。
   - 添加证书时按最长后缀自动匹配对应 Zone（支持手动覆写），写入 `_acme-challenge` TXT 后等待权威/递归传播并在完成后精确清理，Zone 级互斥锁保护同根域与泛域名并发签发。
 
 ### 3. 状态驱动自动续期与 6 阶段实时观测
@@ -194,7 +194,7 @@ server {
 
 1. **DNS 凭据最小权限**：
    - Cloudflare 建议使用仅授予目标域名 `Zone:DNS:Edit` 与 `Zone:Zone:Read` 权限的 API Token。
-   - 华为云 DNS 请使用具备 DNS 解析管理权限的 IAM AK/SK 并准确填写对应 Region（如 `cn-north-4`）。
+   - 华为云 DNS 请使用具备 DNS 解析管理权限的 IAM AK/SK，直接选择国内版（自动使用 `cn-north-4`）或国际版（自动使用 `ap-southeast-1`），亦支持按需自定义 Region。
 2. **SSH Host Key（TOFU 策略）**：
    - 新建 SSH 主机默认启用 `tofu`（首次信任并锁定公钥指纹）。若目标服务器重装导致指纹变化，系统会主动拦截告警，确认安全后可在主机面板点击「重置指纹」重新信任。
 3. **Caddy `--force` 与挂载探测**：
