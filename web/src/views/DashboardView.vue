@@ -25,8 +25,10 @@ const levelFilter = ref<'all' | 'info' | 'warn' | 'error'>('all')
 
 const CHECKLIST_STORAGE_KEY = 'ssl_center_checklist_collapsed'
 const checklistCollapsed = ref(localStorage.getItem(CHECKLIST_STORAGE_KEY) === 'true')
+const checklistUserToggled = ref(false)
 
 function toggleChecklist() {
+  checklistUserToggled.value = true
   checklistCollapsed.value = !checklistCollapsed.value
   localStorage.setItem(CHECKLIST_STORAGE_KEY, String(checklistCollapsed.value))
 }
@@ -35,7 +37,15 @@ async function loadDashboard() {
   loading.value = true
   errorMsg.value = ''
   try {
-    data.value = await getDashboard()
+    const res = await getDashboard()
+    const items = res.checklist || []
+    const allDone = items.length > 0 && items.every((item) => item.done)
+    if (!checklistUserToggled.value) {
+      checklistCollapsed.value = allDone
+        ? true
+        : localStorage.getItem(CHECKLIST_STORAGE_KEY) === 'true'
+    }
+    data.value = res
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : '加载概览数据失败'
   } finally {
@@ -119,8 +129,15 @@ const filteredEvents = computed(() => {
           </span>
           <div>
             <div class="flex items-center gap-2">
-              <h2 class="text-sm font-semibold text-slate-900">新手配置引导 Checklist</h2>
-              <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-semibold text-indigo-700 tabular-nums">
+              <h2 class="text-sm font-semibold text-slate-900">配置引导 Checklist</h2>
+              <span
+                class="rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums"
+                :class="
+                  completedChecklistCount === checklistItems.length
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-indigo-100 text-indigo-700'
+                "
+              >
                 {{ completedChecklistCount }}/{{ checklistItems.length }}
               </span>
             </div>
