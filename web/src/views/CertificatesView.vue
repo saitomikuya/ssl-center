@@ -638,7 +638,12 @@ function applyDeploymentDefaultsForHost(hostId: number, template: DeployTemplate
 function openCreateDeployment() {
   if (!selectedCert.value) return
   editingDeploy.value = null
-  const firstHost = hosts.value.find((h) => !h.is_local) || hosts.value[0]
+  const boundHostIds = new Set(certDeployments.value.map((d) => d.host_id))
+  const firstHost =
+    hosts.value.find((h) => !h.is_local && !boundHostIds.has(h.id)) ||
+    hosts.value.find((h) => !boundHostIds.has(h.id)) ||
+    hosts.value.find((h) => !h.is_local) ||
+    hosts.value[0]
   const defaultTemplate: DeployTemplate =
     firstHost?.is_local && !firstHost.caddy_enabled ? 'local_dir' : 'caddy_docker'
   Object.assign(deployForm, {
@@ -688,9 +693,19 @@ function openEditDeployment(d: DeploymentDTO) {
   deployModalOpen.value = true
 }
 
-function onHostOrTemplateChange() {
+function onHostChange() {
   if (!editingDeploy.value) {
     deployForm.name = ''
+    deployForm.tls_verify_host = ''
+    const host = hosts.value.find((h) => h.id === deployForm.host_id)
+    deployForm.template =
+      host?.is_local && !host.caddy_enabled ? 'local_dir' : 'caddy_docker'
+    applyDeploymentDefaultsForHost(deployForm.host_id, deployForm.template)
+  }
+}
+
+function onTemplateChange() {
+  if (!editingDeploy.value) {
     applyDeploymentDefaultsForHost(deployForm.host_id, deployForm.template)
   }
 }
@@ -1581,7 +1596,7 @@ onUnmounted(() => {
               v-model.number="deployForm.host_id"
               :disabled="!!editingDeploy"
               class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100"
-              @change="onHostOrTemplateChange"
+              @change="onHostChange"
             >
               <option v-for="h in hosts" :key="h.id" :value="h.id">
                 {{ h.name }} ({{ h.is_local ? '本机' : h.host }})
@@ -1593,7 +1608,7 @@ onUnmounted(() => {
             <select
               v-model="deployForm.template"
               class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-              @change="onHostOrTemplateChange"
+              @change="onTemplateChange"
             >
               <option value="caddy_docker">Caddy (Docker)</option>
               <option value="local_dir">本机目录输出</option>
