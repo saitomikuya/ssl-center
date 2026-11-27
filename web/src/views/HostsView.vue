@@ -1187,7 +1187,7 @@ onMounted(() => {
                       @click="router.push({ path: '/certificates', query: { certId: String(d.certificate_id), tab: 'deployments' } })"
                     >
                       <Edit3 class="h-3 w-3 text-slate-500" />
-                      管理目标
+                      部署配置
                     </button>
                   </div>
                 </div>

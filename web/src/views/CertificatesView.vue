@@ -312,11 +312,13 @@ async function submitCert() {
 // Certificate Detail Drawer (3 Tabs)
 // ============================================================================
 const drawerOpen = ref(false)
+const drawerMode = ref<'detail' | 'deployments'>('detail')
 const drawerTab = ref<'info' | 'jobs' | 'deployments'>('info')
 const selectedCert = ref<CertificateDTO | null>(null)
 
 async function openDrawer(c: CertificateDTO, tab: 'info' | 'jobs' | 'deployments' = 'info') {
   selectedCert.value = c
+  drawerMode.value = tab === 'deployments' ? 'deployments' : 'detail'
   drawerTab.value = tab
   drawerOpen.value = true
   await Promise.all([refreshCertDetail(c.id), loadJobs(c.id), loadCertDeployments(c.id)])
@@ -999,7 +1001,7 @@ onUnmounted(() => {
               <td class="px-4 py-4">
                 <button
                   type="button"
-                  title="查看或配置部署目标与日志"
+                  title="打开部署配置"
                   class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium tabular-nums transition hover:ring-1 hover:ring-indigo-300"
                   :class="syncBadge(c).cls"
                   @click.stop="openDrawer(c, 'deployments')"
@@ -1025,7 +1027,7 @@ onUnmounted(() => {
                     @click="openDrawer(c, 'deployments')"
                   >
                     <Send class="h-3 w-3 text-slate-500" />
-                    部署
+                    部署配置
                   </button>
                   <button
                     type="button"
@@ -1192,16 +1194,16 @@ onUnmounted(() => {
       </template>
     </ModalDialog>
 
-    <!-- 3-Tab Certificate Detail Drawer -->
+    <!-- Certificate Detail / Deployment Config Drawer -->
     <DrawerPanel
       :open="drawerOpen"
-      :title="selectedCert?.domain || '证书详情'"
-      :subtitle="selectedCert ? `${selectedCert.name} · ${selectedCert.key_type}` : ''"
+      :title="drawerMode === 'deployments' ? `部署配置 — ${selectedCert?.domain || ''}` : selectedCert?.domain || '证书详情'"
+      :subtitle="selectedCert ? (drawerMode === 'deployments' ? `${selectedCert.name} · 共 ${certDeployments.length} 个部署目标` : `${selectedCert.name} · ${selectedCert.key_type}`) : ''"
       width-class="max-w-3xl"
       @close="closeDrawer"
     >
       <template #headerExtra>
-        <div class="flex gap-6 pt-2">
+        <div v-if="drawerMode === 'detail'" class="flex gap-6 pt-2">
           <button
             type="button"
             class="border-b-2 pb-2.5 text-xs font-semibold transition"
@@ -1225,18 +1227,6 @@ onUnmounted(() => {
             @click="drawerTab = 'jobs'"
           >
             签发进度与日志
-          </button>
-          <button
-            type="button"
-            class="border-b-2 pb-2.5 text-xs font-semibold transition"
-            :class="
-              drawerTab === 'deployments'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            "
-            @click="drawerTab = 'deployments'"
-          >
-            部署目标与日志 ({{ certDeployments.length }})
           </button>
         </div>
       </template>
