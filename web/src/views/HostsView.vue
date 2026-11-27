@@ -433,6 +433,32 @@ async function loadCaddyfile() {
   }
 }
 
+function parentDir(filePath: string): string {
+  const normalized = filePath.trim().replace(/\/+$/, '')
+  if (!normalized) return '/opt/caddy'
+  const idx = normalized.lastIndexOf('/')
+  if (idx === -1) return '/opt/caddy'
+  if (idx === 0) return '/'
+  return normalized.slice(0, idx)
+}
+
+const localCaddyMountSnippet = computed(() => {
+  const caddyDir = parentDir(selectedHost.value?.caddy_host_caddyfile || '/opt/caddy/Caddyfile')
+  const certDir =
+    (selectedHost.value?.caddy_host_cert_dir || '/opt/caddy/certs').trim().replace(/\/+$/, '') ||
+    '/opt/caddy/certs'
+  const lines = [
+    'volumes:',
+    '  - ./data:/data',
+    '  - /var/run/docker.sock:/var/run/docker.sock',
+    `  - ${caddyDir}:${caddyDir}`,
+  ]
+  if (certDir !== caddyDir) {
+    lines.push(`  - ${certDir}:${certDir}`)
+  }
+  return lines.join('\n')
+})
+
 function mapHostCertPathToContainer(
   hostPath: string,
   hostRoot: string,
@@ -1225,7 +1251,20 @@ onMounted(() => {
                 class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-700"
               >
                 <div class="font-semibold">拉取 Caddyfile 失败</div>
-                <div class="mt-1">{{ caddyLoadError }}</div>
+                <div class="mt-1 font-mono break-all">{{ caddyLoadError }}</div>
+                <div
+                  v-if="selectedHost?.is_local"
+                  class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900"
+                >
+                  <div class="font-semibold">Local 模式提示</div>
+                  <p class="mt-1 leading-relaxed">
+                    当 <code class="font-mono">ssl-center</code> 运行在 Docker 容器内时，内置
+                    <code class="font-mono">Local</code> 模式会在 <code class="font-mono">ssl-center</code>
+                    容器自身文件系统内直接读取路径。除 <code class="font-mono">/var/run/docker.sock</code> 外，还需要在
+                    <code class="font-mono">docker-compose.yml</code> 中将宿主机 Caddy 配置目录与证书目录按相同路径挂载进容器后重建容器（或改用 SSH 主机管理本机）：
+                  </p>
+                  <pre class="mt-2 overflow-x-auto rounded bg-slate-900 p-2.5 font-mono text-[11px] text-slate-100">{{ localCaddyMountSnippet }}</pre>
+                </div>
               </div>
 
               <!-- Feedback Banner (validate / reload / rollback) -->
@@ -1423,6 +1462,15 @@ onMounted(() => {
             </label>
           </div>
           <div v-if="hostForm.caddy_enabled" class="grid gap-3 sm:grid-cols-2">
+            <div
+              v-if="editingHost?.is_local"
+              class="sm:col-span-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800"
+            >
+              Docker 部署下使用内置 <code class="font-mono">Local</code> 模式时，请确保在
+              <code class="font-mono">docker-compose.yml</code> 中同时挂载
+              <code class="font-mono">/var/run/docker.sock</code> 以及下方的宿主机 Caddyfile 目录与证书目录（容器内外路径保持一致），否则会提示
+              <code class="font-mono">file does not exist</code>；若不想挂载宿主机目录，也可改用 SSH 主机方式添加本机。
+            </div>
             <div class="sm:col-span-2">
               <label class="mb-1 block text-[11px] font-medium text-slate-600">容器名称</label>
               <input v-model="hostForm.caddy_container" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />

@@ -88,8 +88,11 @@ services:
       # LOG_LEVEL: "info"
     volumes:
       - ./data:/data
-      # 如需使用内置 Local 主机模式管理同宿主机 Caddy 容器，请取消下一行注释并按需挂载宿主机证书/配置目录：
+      # 如需使用内置 Local 主机模式管理同宿主机 Caddy 容器，请取消下方注释，
+      # 并将宿主机实际的 Caddyfile 所在目录与证书目录以相同路径挂载进容器（读写，否则会提示 file does not exist）：
       # - /var/run/docker.sock:/var/run/docker.sock
+      # - /opt/caddy:/opt/caddy
+      # - /opt/caddy/certs:/opt/caddy/certs
 ```
 
 启动服务并查看首次生成的管理员初始密码：
@@ -197,7 +200,7 @@ server {
 3. **Caddy `--force` 与挂载探测**：
    - 部署模板默认使用 `docker exec '<container>' caddy reload --config '<path>' --force`，确保仅更新证书文件而 `Caddyfile` 文本未变时也能强制加载新证书。
    - Caddy 管理面板会通过 `docker inspect` 自动识别配置挂载类型：目录挂载走同目录临时文件校验 + `PosixRename` 原子替换；单文件 bind mount 自动走容器 `/tmp` 预校验 + 原位覆写以保留宿主机文件 inode。
-   - 若使用内置 `Local` 主机管理同宿主机 Caddy 容器，需在启动 `ssl-center` 时挂载 `/var/run/docker.sock` 以及对应的宿主机证书/配置目录。
+   - 若在 Docker 中运行 `ssl-center` 并使用内置 `Local` 主机模式管理同宿主机 Caddy 容器，由于 `Local` 模式是在 `ssl-center` 容器自身文件系统内直接读写路径，除 `/var/run/docker.sock` 外，还必须将宿主机实际的 `Caddyfile` 所在目录和证书目录按**相同路径（读写）**挂载进 `ssl-center` 容器，否则拉取配置会提示 `file does not exist`；若不希望挂载宿主机目录与 Docker Socket，也可新建 SSH 主机来管理本机。
 4. **备份与恢复**：
    - 导出备份包含 `app.db`（`VACUUM INTO` 一致性快照并清除活跃 `sessions`）、`master.key`、`certs/` 与 `manifest.json`（SHA-256 清单）。
    - 恢复前会自动校验归档路径安全（防 Tar-Slip 与软链接）、SHA-256 完整性、SQLite `integrity_check` 与主密钥试解密，并在全局维护锁保护下备份旧数据至 `<DATA_DIR>/pre_restore_<ts>/` 后原子切换。恢复完成后请使用备份库中的管理员密码重新登录。

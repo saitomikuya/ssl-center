@@ -24,5 +24,8 @@ services:
       # LOG_LEVEL: "info"
     volumes:
       - ./data:/data
-      # 如需使用内置 Local 主机模式管理同宿主机 Caddy 容器，请取消下一行注释并按需挂载宿主机目录：
+      # 如需使用内置 Local 主机模式管理同宿主机 Caddy 容器，请取消下方注释，
+      # 并将宿主机实际的 Caddyfile 所在目录与证书目录以相同路径挂载进容器（读写，否则会提示 file does not exist）：
       # - /var/run/docker.sock:/var/run/docker.sock
+      # - /opt/caddy:/opt/caddy
+      # - /opt/caddy/certs:/opt/caddy/certs
