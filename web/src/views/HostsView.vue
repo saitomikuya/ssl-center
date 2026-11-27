@@ -267,8 +267,9 @@ async function handleTestConnection() {
   try {
     const res = await testHostConnection(selectedHost.value.id)
     testResult.value = res
-    if (res.ssh_ok && res.docker_ok) {
-      showToast('success', '主机连接与 Docker 检测通过')
+    const caddyRequired = selectedHost.value.caddy_enabled
+    if (res.ssh_ok && (!caddyRequired || (res.docker_ok && res.caddy_running))) {
+      showToast('success', caddyRequired ? '主机连接与 Caddy 检测通过' : '主机 SSH 连接检测通过')
     } else {
       showToast('warning', res.message || '连接检测存在异常，请查看详情')
     }
@@ -699,6 +700,7 @@ watch(selectedHostId, (id) => {
   caddyContent.value = ''
   expectedSHA256.value = ''
   caddyFeedback.value = null
+  caddyLoadError.value = ''
   caddyErrorLine.value = null
   if (!id) return
   void loadHostDeployments(id)
@@ -795,8 +797,32 @@ onMounted(() => {
           </div>
 
           <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-            <StatusBadge v-if="h.caddy_enabled" :status="h.caddy_status || 'unknown'" />
-            <span v-else class="rounded bg-slate-100 px-2 py-0.5 text-slate-500">未启用 Caddy</span>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span
+                class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium ring-1 ring-inset"
+                :class="
+                  h.last_check_ok === true
+                    ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20'
+                    : h.last_check_ok === false
+                      ? 'bg-rose-50 text-rose-700 ring-rose-600/20'
+                      : 'bg-slate-100 text-slate-600 ring-slate-500/20'
+                "
+              >
+                <span
+                  class="h-1.5 w-1.5 rounded-full"
+                  :class="
+                    h.last_check_ok === true
+                      ? 'bg-emerald-500'
+                      : h.last_check_ok === false
+                        ? 'bg-rose-500'
+                        : 'bg-slate-400'
+                  "
+                />
+                {{ h.last_check_ok === true ? '在线' : h.last_check_ok === false ? '离线' : '未检测' }}
+              </span>
+              <StatusBadge v-if="h.caddy_enabled" :status="h.caddy_status || 'unknown'" />
+              <span v-else class="rounded bg-slate-100 px-2 py-0.5 text-slate-500">未启用 Caddy</span>
+            </div>
             <span class="text-slate-500 tabular-nums">{{ h.deployment_count }} 个部署</span>
           </div>
         </button>
@@ -909,16 +935,18 @@ onMounted(() => {
               v-if="testResult"
               class="space-y-2 rounded-xl border p-4 text-xs"
               :class="
-                testResult.ssh_ok && testResult.docker_ok
+                testResult.ssh_ok && (!selectedHost.caddy_enabled || (testResult.docker_ok && testResult.caddy_running))
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
                   : 'border-amber-200 bg-amber-50 text-amber-900'
               "
             >
               <div class="flex flex-wrap items-center gap-3 font-semibold">
                 <span>SSH/本机: {{ testResult.ssh_ok ? '正常' : '失败' }}</span>
-                <span>Docker: {{ testResult.docker_ok ? '可用' : '不可用' }}</span>
-                <span>Caddy 容器: {{ testResult.caddy_running ? '运行中' : '未运行' }}</span>
-                <span v-if="testResult.caddy_version" class="font-mono">({{ testResult.caddy_version }})</span>
+                <template v-if="selectedHost.caddy_enabled">
+                  <span>Docker: {{ testResult.docker_ok ? '可用' : '不可用' }}</span>
+                  <span>Caddy 容器: {{ testResult.caddy_running ? '运行中' : '未运行' }}</span>
+                  <span v-if="testResult.caddy_version" class="font-mono">({{ testResult.caddy_version }})</span>
+                </template>
               </div>
               <div v-if="testResult.host_key_fingerprint" class="font-mono text-[11px] break-all">
                 Host Key ({{ testResult.host_key_status }}): {{ testResult.host_key_fingerprint }}

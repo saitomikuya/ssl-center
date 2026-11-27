@@ -21,6 +21,7 @@ func (t *Transport) testLocalConnection(ctx context.Context, host *model.Host) (
 		Message:       "Local host accessible",
 	}
 	caddyStatus := model.CaddyStatusUnknown
+	checkOK := true
 
 	if host.CaddyEnabled {
 		container := strings.TrimSpace(host.CaddyContainer)
@@ -28,8 +29,9 @@ func (t *Transport) testLocalConnection(ctx context.Context, host *model.Host) (
 			container = "caddy"
 		}
 		if err := model.ValidateContainerName(container); err != nil {
+			checkOK = false
 			res.Message = t.redact(fmt.Sprintf("Local host OK; invalid Caddy container name: %v", err))
-			t.persistCheckResult(ctx, host, true, res.Message, caddyStatus)
+			t.persistCheckResult(ctx, host, checkOK, res.Message, caddyStatus)
 			return res, nil
 		}
 
@@ -53,6 +55,7 @@ func (t *Transport) testLocalConnection(ctx context.Context, host *model.Host) (
 					res.Message = fmt.Sprintf("Local host OK; Docker OK; Caddy container %q is stopped", container)
 				}
 			} else {
+				checkOK = false
 				caddyStatus = model.CaddyStatusUnknown
 				detail := ""
 				if inspectRes != nil {
@@ -61,6 +64,7 @@ func (t *Transport) testLocalConnection(ctx context.Context, host *model.Host) (
 				res.Message = fmt.Sprintf("Local host OK; Docker OK; Caddy container %q inspect failed: %s", container, detail)
 			}
 		} else {
+			checkOK = false
 			detail := ""
 			if infoErr != nil {
 				detail = infoErr.Error()
@@ -75,7 +79,7 @@ func (t *Transport) testLocalConnection(ctx context.Context, host *model.Host) (
 	}
 
 	res.Message = t.redact(res.Message)
-	t.persistCheckResult(ctx, host, true, res.Message, caddyStatus)
+	t.persistCheckResult(ctx, host, checkOK, res.Message, caddyStatus)
 	return res, nil
 }
 

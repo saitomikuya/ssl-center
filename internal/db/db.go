@@ -99,24 +99,31 @@ func runMigrations(sqlDB *sql.DB) error {
 	if err := sqlDB.QueryRow("PRAGMA user_version;").Scan(&userVersion); err != nil {
 		return fmt.Errorf("read user_version: %w", err)
 	}
-	if userVersion >= 1 {
-		return nil
+	if userVersion < 1 {
+		tx, err := sqlDB.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration tx: %w", err)
+		}
+		if _, err := tx.Exec(initSQL); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("execute 001_init.sql: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration tx: %w", err)
+		}
+
+		if _, err := sqlDB.Exec("PRAGMA user_version = 1;"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
 	}
 
-	tx, err := sqlDB.Begin()
-	if err != nil {
-		return fmt.Errorf("begin migration tx: %w", err)
-	}
-	if _, err := tx.Exec(initSQL); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("execute 001_init.sql: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit migration tx: %w", err)
-	}
-
-	if _, err := sqlDB.Exec("PRAGMA user_version = 1;"); err != nil {
-		return fmt.Errorf("set user_version: %w", err)
+	// Repair stale Local host check state recorded before Caddy/Docker reachability was enforced.
+	if _, err := sqlDB.Exec(`
+		UPDATE hosts
+		SET last_check_ok = 0
+		WHERE is_local = 1 AND caddy_enabled = 1 AND caddy_status = 'unknown' AND last_check_ok = 1
+	`); err != nil {
+		return fmt.Errorf("repair local host check status: %w", err)
 	}
 	return nil
 }

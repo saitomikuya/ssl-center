@@ -514,3 +514,46 @@ func TestFKErrorMappingAndEmptyListSlices(t *testing.T) {
 		t.Fatalf("DeleteCAAccount in use = %v, want ErrResourceInUse", err)
 	}
 }
+
+func TestOpenRepairsStaleLocalHostCheckStatus(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "app.db")
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open initial: %v", err)
+	}
+
+	ctx := context.Background()
+	localHost, err := d.GetLocalHost(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateHostCheckResult(ctx, localHost.ID, true, "Local host OK; Docker unavailable", model.CaddyStatusUnknown, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open reopen: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+
+	got, err := reopened.GetLocalHost(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastCheckOK == nil || *got.LastCheckOK {
+		t.Fatalf("expected stale Local last_check_ok=1 to be repaired to 0, got %v", got.LastCheckOK)
+	}
+
+	_, hs, _, err := reopened.GetDashboardCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hs.Reachable != 0 || hs.Unreachable != 1 {
+		t.Fatalf("expected dashboard reachable=0 unreachable=1 after repair, got %+v", hs)
+	}
+}

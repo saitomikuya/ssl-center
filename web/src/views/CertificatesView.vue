@@ -634,7 +634,7 @@ function applyDeploymentDefaultsForHost(hostId: number, template: DeployTemplate
 function openCreateDeployment() {
   if (!selectedCert.value) return
   editingDeploy.value = null
-  const firstHost = hosts.value[0]
+  const firstHost = hosts.value.find((h) => !h.is_local) || hosts.value[0]
   const defaultTemplate: DeployTemplate = firstHost?.is_local ? 'local_dir' : 'caddy_docker'
   Object.assign(deployForm, {
     host_id: firstHost?.id || 0,

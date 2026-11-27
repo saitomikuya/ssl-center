@@ -61,8 +61,8 @@ const certIssueCount = computed(() => {
   return s.expired + s.error
 })
 
-const deploySuccessRate = computed(() => {
-  if (!data.value || data.value.deployment_stats.total === 0) return 100
+const deploySuccessRate = computed<number | null>(() => {
+  if (!data.value || data.value.deployment_stats.total === 0) return null
   return Math.round(
     (data.value.deployment_stats.success / data.value.deployment_stats.total) * 100,
   )
@@ -275,15 +275,25 @@ const filteredEvents = computed(() => {
           </div>
         </div>
         <div class="mt-3 flex items-baseline gap-2">
-          <span class="text-3xl font-bold text-slate-900 tabular-nums">{{ deploySuccessRate }}%</span>
-          <span class="text-xs text-slate-500">目标已同步</span>
+          <span class="text-3xl font-bold text-slate-900 tabular-nums">
+            {{ deploySuccessRate === null ? '—' : `${deploySuccessRate}%` }}
+          </span>
+          <span class="text-xs text-slate-500">
+            {{ deploySuccessRate === null ? '暂无部署目标' : '目标已同步' }}
+          </span>
         </div>
         <div class="mt-4">
           <div class="h-2 w-full overflow-hidden rounded-full bg-slate-100">
             <div
               class="h-full rounded-full transition-all duration-500"
-              :class="data.deployment_stats.failed > 0 ? 'bg-amber-500' : 'bg-emerald-500'"
-              :style="{ width: `${deploySuccessRate}%` }"
+              :class="
+                deploySuccessRate === null
+                  ? 'bg-slate-200'
+                  : data.deployment_stats.failed > 0
+                    ? 'bg-amber-500'
+                    : 'bg-emerald-500'
+              "
+              :style="{ width: `${deploySuccessRate ?? 0}%` }"
             />
           </div>
           <div class="mt-1.5 flex justify-between text-[11px] text-slate-500 tabular-nums">

@@ -440,3 +440,43 @@ func TestSSHTransport_DockerInfoEmptyStdoutWithZeroExitMarksUnavailable(t *testi
 		t.Fatalf("unexpected message: %q", res.Message)
 	}
 }
+
+func TestLocalTransport_CaddyEnabledInvalidContainerPersistsNotOK(t *testing.T) {
+	ctx := context.Background()
+	database, cipher, redactor := setupTestDBAndCrypto(t)
+	tr := deploy.NewTransport(database, cipher, redactor, nil)
+
+	localHost, err := database.GetLocalHost(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localHost.CaddyEnabled = true
+	localHost.CaddyContainer = "bad container!"
+	if err := database.UpdateHost(ctx, localHost); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := tr.TestConnection(ctx, localHost)
+	if err != nil {
+		t.Fatalf("TestConnection: %v", err)
+	}
+	if res.DockerOK || res.CaddyRunning {
+		t.Fatalf("expected DockerOK=false and CaddyRunning=false, got %+v", res)
+	}
+
+	got, err := database.GetLocalHost(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastCheckOK == nil || *got.LastCheckOK {
+		t.Fatalf("expected Local host last_check_ok=false when Caddy check fails, got %v", got.LastCheckOK)
+	}
+
+	_, hs, _, err := database.GetDashboardCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hs.Reachable != 0 || hs.Unreachable != 1 {
+		t.Fatalf("expected dashboard reachable=0 unreachable=1, got %+v", hs)
+	}
+}
