@@ -543,3 +543,121 @@ func TestEngine_LocalDirAdminAPIAndWebhookReload(t *testing.T) {
 		t.Fatal("expected webhook reload endpoint to be called")
 	}
 }
+
+func TestTLSVerify_InitialDeploySoftWarningThenStrict(t *testing.T) {
+	ctx := context.Background()
+	database, cipher, redactor := setupTestDBAndCrypto(t)
+	notifier := &spyNotifier{}
+	tr := deploy.NewTransport(database, cipher, redactor, nil)
+	engine := deploy.NewEngine(database, tr, notifier, redactor, nil)
+
+	tsMatch := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer tsMatch.Close()
+
+	otherCertPEM, otherKeyPEM, mismatchFP := generateSelfSignedCertPEM(t, "legacy.example.com")
+	otherTLSCert, err := tls.X509KeyPair(otherCertPEM, otherKeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsMismatch := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	tsMismatch.TLS = &tls.Config{Certificates: []tls.Certificate{otherTLSCert}}
+	tsMismatch.StartTLS()
+	defer tsMismatch.Close()
+
+	matchPEM, matchFP := tlsServerCertPEMAndFP(t, tsMatch)
+	_, privPEM, _ := generateSelfSignedCertPEM(t, "initial.example.com")
+	cert := seedCertWithFiles(t, database, cipher, "initial.example.com", matchPEM, privPEM, matchFP)
+
+	privSSH, pubSSH := generateClientSSHKeyPair(t, "")
+	sshSrv := newMockSSHServer(t, pubSSH, "")
+	sshSrv.SetExecHandler(func(cmd string, stdin []byte) (string, string, int) {
+		return "reloaded", "", 0
+	})
+	host := createSSHTestHost(t, database, cipher, sshSrv, model.HostAuthKey, privSSH, "", "", model.HostKeyPolicyTOFU, "")
+
+	certOutDir := filepath.Join(t.TempDir(), "initial-certs")
+	mismatchHost, mismatchPort := splitHostPortInt(t, tsMismatch.URL)
+	matchHost, matchPort := splitHostPortInt(t, tsMatch.URL)
+
+	dep := &model.Deployment{
+		CertificateID:    cert.ID,
+		HostID:           host.ID,
+		Name:             "initial-soft-warning",
+		Template:         model.DeployTemplateCaddyDocker,
+		Enabled:          true,
+		FullchainPath:    filepath.Join(certOutDir, "fullchain.pem"),
+		PrivkeyPath:      filepath.Join(certOutDir, "privkey.pem"),
+		IssuerPath:       filepath.Join(certOutDir, "issuer.pem"),
+		CertFileMode:     "0644",
+		KeyFileMode:      "0600",
+		ReloadMode:       model.ReloadModeDockerExec,
+		ReloadCommand:    model.DefaultCaddyReloadCmd("caddy", "/etc/caddy/Caddyfile"),
+		TLSVerifyEnabled: true,
+		TLSVerifyHost:    mismatchHost,
+		TLSVerifyPort:    mismatchPort,
+		TLSVerifySNI:     "example.com",
+	}
+	if _, err := database.CreateDeployment(ctx, dep); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. First push with legacy cert still served -> succeeds with warning & no deploy.failed alert.
+	firstLog, err := engine.DeployTarget(ctx, dep.ID, model.TriggerManual)
+	if err != nil {
+		t.Fatalf("expected initial deploy with stale live cert to soft-succeed, got err=%v", err)
+	}
+	if firstLog.Status != model.JobStatusSuccess || firstLog.TLSVerified || firstLog.TLSObservedFP != mismatchFP || firstLog.ErrorMessage == "" {
+		t.Fatalf("unexpected first DeployLog: %+v", firstLog)
+	}
+	depAfterFirst, err := database.GetDeployment(ctx, dep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if depAfterFirst.LastStatus != model.JobStatusSuccess || depAfterFirst.LastDeployedAt == nil || depAfterFirst.LastCertFingerprint != "" || depAfterFirst.LastError == "" {
+		t.Fatalf("unexpected deployment state after initial soft deploy: %+v", depAfterFirst)
+	}
+	for _, ev := range notifier.Events() {
+		if ev.Event == model.WebhookEventDeployFailed {
+			t.Fatalf("did not expect deploy.failed webhook on initial soft warning, got %+v", ev)
+		}
+	}
+
+	// 2. Second push while live cert still mismatches -> strictly fails and alerts.
+	notifier.Reset()
+	secondLog, err := engine.DeployTarget(ctx, dep.ID, model.TriggerManual)
+	if err == nil {
+		t.Fatal("expected second push with mismatched TLS fingerprint to fail")
+	}
+	if secondLog == nil || secondLog.Status != model.JobStatusFailed || secondLog.TLSVerified {
+		t.Fatalf("unexpected second DeployLog: %+v", secondLog)
+	}
+	events := notifier.Events()
+	if len(events) != 1 || events[0].Event != model.WebhookEventDeployFailed {
+		t.Fatalf("expected deploy.failed webhook on second mismatch push, got %+v", events)
+	}
+
+	// 3. After switching live server to matching cert -> third push verifies and clears warning.
+	dep.TLSVerifyHost = matchHost
+	dep.TLSVerifyPort = matchPort
+	if err := database.UpdateDeployment(ctx, dep); err != nil {
+		t.Fatal(err)
+	}
+	thirdLog, err := engine.DeployTarget(ctx, dep.ID, model.TriggerManual)
+	if err != nil {
+		t.Fatalf("expected third push after Caddyfile update to verify and pass, got err=%v", err)
+	}
+	if thirdLog.Status != model.JobStatusSuccess || !thirdLog.TLSVerified || thirdLog.ErrorMessage != "" {
+		t.Fatalf("unexpected third DeployLog: %+v", thirdLog)
+	}
+	depAfterThird, err := database.GetDeployment(ctx, dep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if depAfterThird.LastStatus != model.JobStatusSuccess || depAfterThird.LastCertFingerprint != matchFP || depAfterThird.LastError != "" {
+		t.Fatalf("unexpected deployment state after verified push: %+v", depAfterThird)
+	}
+}

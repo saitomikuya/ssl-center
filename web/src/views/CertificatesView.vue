@@ -758,7 +758,11 @@ async function handlePushDeployment(d: DeploymentDTO) {
   try {
     const log = await pushDeployment(d.id)
     if (log.status === 'success') {
-      showToast('success', `「${d.name}」推送并校验成功`)
+      if (d.tls_verify_enabled && !log.tls_verified && log.error_message) {
+        showToast('warning', `「${d.name}」证书已写入，首次 TLS 指纹尚未生效；请更新 Caddyfile 后再次推送验证`)
+      } else {
+        showToast('success', `「${d.name}」推送并校验成功`)
+      }
     } else {
       showToast('error', `「${d.name}」推送失败: ${log.error_message || '请查看部署日志'}`)
     }
@@ -1473,6 +1477,12 @@ onUnmounted(() => {
                   <div class="flex flex-wrap items-center gap-2">
                     <span class="text-sm font-semibold text-slate-900">{{ d.name }}</span>
                     <StatusBadge :status="d.last_status || 'pending'" />
+                    <span
+                      v-if="d.tls_verify_enabled && d.last_status === 'success' && !d.last_cert_fingerprint"
+                      class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200"
+                    >
+                      待 TLS 生效
+                    </span>
                     <span class="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-600">
                       {{ d.template }}
                     </span>
@@ -1530,7 +1540,12 @@ onUnmounted(() => {
                   最近推送: {{ formatDateTime(d.last_deployed_at) }}
                   <span v-if="d.last_cert_fingerprint">· FP: {{ truncateFingerprint(d.last_cert_fingerprint, 8) }}</span>
                 </div>
-                <div v-if="d.last_error" class="text-rose-600">错误: {{ d.last_error }}</div>
+                <div
+                  v-if="d.last_error"
+                  :class="d.last_status === 'success' ? 'text-amber-700' : 'text-rose-600'"
+                >
+                  {{ d.last_status === 'success' ? '提示' : '错误' }}: {{ d.last_error }}
+                </div>
               </div>
             </div>
           </div>
@@ -1746,7 +1761,11 @@ onUnmounted(() => {
           <div v-if="log.tls_observed_fp" class="mt-2 font-mono text-[11px] text-slate-600 break-all">
             TLS Observed FP: {{ log.tls_observed_fp }}
           </div>
-          <div v-if="log.error_message" class="mt-2 rounded bg-rose-50 px-2.5 py-1.5 text-rose-700">
+          <div
+            v-if="log.error_message"
+            class="mt-2 rounded px-2.5 py-1.5"
+            :class="log.status === 'success' ? 'bg-amber-50 text-amber-800' : 'bg-rose-50 text-rose-700'"
+          >
             {{ log.error_message }}
           </div>
           <div v-if="log.stdout" class="mt-2">

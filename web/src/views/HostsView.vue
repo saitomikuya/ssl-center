@@ -348,7 +348,11 @@ async function handleQuickPush(d: DeploymentDTO) {
   try {
     const log = await pushDeployment(d.id)
     if (log.status === 'success') {
-      showToast('success', `「${d.name}」推送成功`)
+      if (d.tls_verify_enabled && !log.tls_verified && log.error_message) {
+        showToast('warning', `「${d.name}」证书已写入，首次 TLS 指纹尚未生效；请更新 Caddyfile 后再次推送验证`)
+      } else {
+        showToast('success', `「${d.name}」推送成功`)
+      }
     } else {
       showToast('error', `「${d.name}」推送失败: ${log.error_message || '请查看日志'}`)
     }
@@ -1113,6 +1117,12 @@ onMounted(() => {
                       <span class="text-sm font-semibold text-slate-900">{{ d.cert_domain || `Cert #${d.certificate_id}` }}</span>
                       <span class="text-xs text-slate-500">({{ d.name }})</span>
                       <StatusBadge :status="d.last_status || 'pending'" />
+                      <span
+                        v-if="d.tls_verify_enabled && d.last_status === 'success' && !d.last_cert_fingerprint"
+                        class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200"
+                      >
+                        待 TLS 生效
+                      </span>
                     </div>
                     <div class="mt-1 font-mono text-[11px] text-slate-500">
                       {{ d.fullchain_path }}
@@ -1121,7 +1131,13 @@ onMounted(() => {
                       最近推送: {{ formatDateTime(d.last_deployed_at) }}
                       <span v-if="d.last_cert_fingerprint">· FP: {{ truncateFingerprint(d.last_cert_fingerprint, 8) }}</span>
                     </div>
-                    <div v-if="d.last_error" class="mt-1 text-xs text-rose-600">{{ d.last_error }}</div>
+                    <div
+                      v-if="d.last_error"
+                      class="mt-1 text-xs"
+                      :class="d.last_status === 'success' ? 'text-amber-700' : 'text-rose-600'"
+                    >
+                      {{ d.last_error }}
+                    </div>
                   </div>
                   <div class="flex items-center gap-2">
                     <button
@@ -1157,56 +1173,71 @@ onMounted(() => {
             </div>
 
             <div v-else class="space-y-4">
-              <!-- Toolbar -->
-              <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <div class="flex flex-wrap items-center gap-2">
+              <!-- Toolbar: grouped cleanly into Host Config (Caddyfile) vs Docker Container -->
+              <div class="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200">
+                      <FileCode2 class="h-3.5 w-3.5 text-indigo-500" />
+                      主机配置 · Caddyfile
+                    </span>
+                    <button
+                      type="button"
+                      :disabled="caddyLoading"
+                      class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      @click="loadCaddyfile"
+                    >
+                      <RefreshCw class="h-3.5 w-3.5" :class="caddyLoading ? 'animate-spin' : ''" />
+                      拉取线上
+                    </button>
+                    <button
+                      type="button"
+                      :disabled="formatting || caddyLoading"
+                      class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      @click="handleFormat"
+                    >
+                      <Wand2 class="h-3.5 w-3.5" />
+                      {{ formatting ? '格式化中...' : '格式化 (fmt)' }}
+                    </button>
+                    <button
+                      type="button"
+                      :disabled="validating || caddyLoading"
+                      class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      @click="handleValidate"
+                    >
+                      <CheckCircle2 class="h-3.5 w-3.5 text-emerald-600" />
+                      {{ validating ? '校验中...' : '预校验 (validate)' }}
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      @click="openSnapshotsModal"
+                    >
+                      <History class="h-3.5 w-3.5 text-slate-500" />
+                      历史快照
+                    </button>
+                  </div>
+
                   <button
                     type="button"
-                    :disabled="caddyLoading"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                    @click="loadCaddyfile"
+                    :disabled="publishing || caddyLoading"
+                    title="写入宿主机 Caddyfile 并热重载 Caddy 容器"
+                    class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+                    @click="handlePublish(false)"
                   >
-                    <RefreshCw class="h-3.5 w-3.5" :class="caddyLoading ? 'animate-spin' : ''" />
-                    拉取线上
-                  </button>
-                  <button
-                    type="button"
-                    :disabled="formatting || caddyLoading"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                    @click="handleFormat"
-                  >
-                    <Wand2 class="h-3.5 w-3.5" />
-                    {{ formatting ? '格式化中...' : '格式化 (fmt)' }}
-                  </button>
-                  <button
-                    type="button"
-                    :disabled="validating || caddyLoading"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                    @click="handleValidate"
-                  >
-                    <CheckCircle2 class="h-3.5 w-3.5 text-emerald-600" />
-                    {{ validating ? '校验中...' : '预校验 (validate)' }}
-                  </button>
-                  <button
-                    type="button"
-                    :disabled="reloading"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                    @click="handleReloadOnly"
-                  >
-                    <RotateCcw class="h-3.5 w-3.5 text-sky-600" />
-                    仅重载 Caddy
+                    <Save class="h-3.5 w-3.5" />
+                    {{ publishing ? '发布中...' : '保存并重载 (⌘S)' }}
                   </button>
                 </div>
 
-                <div class="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                    @click="openSnapshotsModal"
-                  >
-                    <History class="h-3.5 w-3.5 text-slate-500" />
-                    历史快照
-                  </button>
+                <div class="flex flex-wrap items-center gap-2 border-t border-slate-200/80 pt-2.5">
+                  <span class="inline-flex items-center gap-1.5 rounded-md bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200">
+                    <Container class="h-3.5 w-3.5 text-sky-600" />
+                    Docker 容器
+                    <code class="font-mono text-[10px] font-normal text-slate-400">
+                      {{ selectedHost.caddy_container || 'caddy' }}
+                    </code>
+                  </span>
                   <button
                     type="button"
                     class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
@@ -1217,12 +1248,13 @@ onMounted(() => {
                   </button>
                   <button
                     type="button"
-                    :disabled="publishing || caddyLoading"
-                    class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
-                    @click="handlePublish(false)"
+                    :disabled="reloading"
+                    title="不修改 Caddyfile，直接执行容器热重载"
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    @click="handleReloadOnly"
                   >
-                    <Save class="h-3.5 w-3.5" />
-                    {{ publishing ? '发布中...' : '保存并重载 (⌘S)' }}
+                    <RotateCcw class="h-3.5 w-3.5 text-sky-600" />
+                    仅重载 Caddy
                   </button>
                 </div>
               </div>
@@ -1740,7 +1772,13 @@ onMounted(() => {
             </div>
             <span class="font-mono text-[11px] text-slate-500 tabular-nums">{{ formatDateTime(log.started_at) }}</span>
           </div>
-          <div v-if="log.error_message" class="mt-2 rounded bg-rose-50 px-2.5 py-1.5 text-rose-700">{{ log.error_message }}</div>
+          <div
+            v-if="log.error_message"
+            class="mt-2 rounded px-2.5 py-1.5"
+            :class="log.status === 'success' ? 'bg-amber-50 text-amber-800' : 'bg-rose-50 text-rose-700'"
+          >
+            {{ log.error_message }}
+          </div>
           <pre v-if="log.stdout" class="mt-2 max-h-32 overflow-auto rounded bg-slate-900 p-2 font-mono text-[11px] text-emerald-300">{{ log.stdout }}</pre>
           <pre v-if="log.stderr" class="mt-2 max-h-32 overflow-auto rounded bg-slate-900 p-2 font-mono text-[11px] text-rose-300">{{ log.stderr }}</pre>
         </div>

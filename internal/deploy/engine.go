@@ -169,6 +169,7 @@ func (e *Engine) deployOne(
 	if _, err := e.db.CreateDeployLog(ctx, logEntry); err != nil {
 		return nil, err
 	}
+	isInitialDeploy := dep.LastDeployedAt == nil
 	_ = e.db.UpdateDeploymentStatus(ctx, dep.ID, model.JobStatusRunning, dep.LastCertFingerprint, "", nil)
 
 	finishFail := func(errMsg string, exitCode *int, stdout, stderr string, tlsVerified bool, tlsObservedFP string) (*model.DeployLog, error) {
@@ -240,14 +241,25 @@ func (e *Engine) deployOne(
 
 	tlsVerified := false
 	tlsObservedFP := ""
+	tlsWarning := ""
+	deployedFP := expectedFP
 	if dep.TLSVerifyEnabled && exitCode != nil && *exitCode == 0 {
 		vHost, vPort, vSNI := resolveTLSVerifyTarget(cert, dep, host)
 		observedFP, verifyErr := VerifyTLSFingerprint(ctx, vHost, vPort, vSNI, expectedFP)
 		tlsObservedFP = observedFP
 		if verifyErr != nil {
-			return finishFail(fmt.Sprintf("TLS verification failed on %s:%d (SNI %s): %v", vHost, vPort, vSNI, verifyErr), exitCode, stdout, stderr, false, observedFP)
+			if isInitialDeploy {
+				deployedFP = ""
+				tlsWarning = e.redact(fmt.Sprintf(
+					"Initial deploy succeeded, but live TLS verification on %s:%d (SNI %s) has not matched yet (%v). Update Caddyfile/server config to use the new certificate path and re-push to complete strict verification.",
+					vHost, vPort, vSNI, verifyErr,
+				))
+			} else {
+				return finishFail(fmt.Sprintf("TLS verification failed on %s:%d (SNI %s): %v", vHost, vPort, vSNI, verifyErr), exitCode, stdout, stderr, false, observedFP)
+			}
+		} else {
+			tlsVerified = true
 		}
-		tlsVerified = true
 	}
 
 	now := time.Now().UTC()
@@ -257,13 +269,13 @@ func (e *Engine) deployOne(
 	logEntry.Stderr = e.redact(stderr)
 	logEntry.TLSVerified = tlsVerified
 	logEntry.TLSObservedFP = tlsObservedFP
-	logEntry.ErrorMessage = ""
+	logEntry.ErrorMessage = tlsWarning
 	logEntry.FinishedAt = &now
 
 	if err := e.db.UpdateDeployLog(ctx, logEntry); err != nil {
 		return logEntry, err
 	}
-	if err := e.db.UpdateDeploymentStatus(ctx, dep.ID, model.JobStatusSuccess, expectedFP, "", &now); err != nil {
+	if err := e.db.UpdateDeploymentStatus(ctx, dep.ID, model.JobStatusSuccess, deployedFP, tlsWarning, &now); err != nil {
 		return logEntry, err
 	}
 
