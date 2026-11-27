@@ -1046,7 +1046,7 @@ onUnmounted(() => {
             <input
               v-model="certForm.domain"
               type="text"
-              placeholder="*.example.com"
+              placeholder="example.com"
               class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm focus:border-indigo-500 focus:outline-none"
             />
           </div>
@@ -1063,12 +1063,12 @@ onUnmounted(() => {
 
         <div>
           <label class="mb-1 block text-xs font-medium text-slate-700">
-            附加 SAN 列表（逗号或换行分隔，例如根域名 example.com）
+            附加 SAN 列表（可选，逗号或换行分隔，例如泛域名 *.example.com）
           </label>
           <textarea
             v-model="certForm.sansText"
             rows="2"
-            placeholder="example.com&#10;*.example.com"
+            placeholder="*.example.com"
             class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs focus:border-indigo-500 focus:outline-none"
           />
         </div>
