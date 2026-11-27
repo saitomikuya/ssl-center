@@ -73,15 +73,6 @@ func VerifyTLSFingerprint(ctx context.Context, hostAddr string, port int, server
 }
 
 func resolveTLSVerifyTarget(cert *model.Certificate, dep *model.Deployment, host *model.Host) (verifyHost string, verifyPort int, verifySNI string) {
-	verifyHost = strings.TrimSpace(dep.TLSVerifyHost)
-	if verifyHost == "" {
-		if host != nil && strings.TrimSpace(host.Host) != "" && !isLocalHost(host) {
-			verifyHost = strings.TrimSpace(host.Host)
-		} else if cert != nil {
-			verifyHost = strings.TrimPrefix(strings.TrimSpace(cert.Domain), "*.")
-		}
-	}
-
 	verifyPort = dep.TLSVerifyPort
 	if verifyPort <= 0 {
 		verifyPort = 443
@@ -99,9 +90,22 @@ func resolveTLSVerifyTarget(cert *model.Certificate, dep *model.Deployment, host
 					verifySNI = strings.TrimPrefix(dom, "*.")
 				}
 			}
-		} else {
-			verifySNI = verifyHost
 		}
+	}
+
+	verifyHost = strings.TrimSpace(dep.TLSVerifyHost)
+	if verifyHost == "" {
+		if host != nil && strings.TrimSpace(host.Host) != "" && !isLocalHost(host) {
+			verifyHost = strings.TrimSpace(host.Host)
+		} else if verifySNI != "" {
+			verifyHost = strings.TrimPrefix(verifySNI, "*.")
+		} else if cert != nil {
+			verifyHost = strings.TrimPrefix(strings.TrimSpace(cert.Domain), "*.")
+		}
+	}
+
+	if verifySNI == "" {
+		verifySNI = verifyHost
 	}
 	return verifyHost, verifyPort, verifySNI
 }

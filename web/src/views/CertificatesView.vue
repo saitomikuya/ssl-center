@@ -1679,7 +1679,12 @@ onUnmounted(() => {
           <div v-if="deployForm.tls_verify_enabled" class="grid gap-3 sm:grid-cols-3">
             <div>
               <label class="mb-1 block text-[11px] font-medium text-slate-600">校验主机 / IP</label>
-              <input v-model="deployForm.tls_verify_host" type="text" placeholder="留空自动使用主机 IP" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+              <input
+                v-model="deployForm.tls_verify_host"
+                type="text"
+                :placeholder="hosts.find((h) => h.id === deployForm.host_id)?.is_local ? '留空默认连 TLS SNI 域名（或填本机 IP）' : '留空自动使用主机 IP'"
+                class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
+              />
             </div>
             <div>
               <label class="mb-1 block text-[11px] font-medium text-slate-600">端口</label>
