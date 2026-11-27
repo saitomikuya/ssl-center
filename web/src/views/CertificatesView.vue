@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   AlertCircle,
   CheckCircle2,
@@ -77,6 +78,7 @@ const DEFAULT_STAGES: CertJobStage[] = [
 // ============================================================================
 // Main List State
 // ============================================================================
+const route = useRoute()
 const certs = ref<CertificateDTO[]>([])
 const caList = ref<CAAccountDTO[]>([])
 const dnsList = ref<DNSCredentialDTO[]>([])
@@ -844,8 +846,17 @@ async function runConfirmDelete() {
   }
 }
 
-onMounted(() => {
-  void loadAll()
+onMounted(async () => {
+  await loadAll()
+  const qCertId = Number(route.query.certId)
+  if (qCertId) {
+    const target = certs.value.find((c) => c.id === qCertId)
+    if (target) {
+      const qTab = route.query.tab
+      const tab = qTab === 'deployments' || qTab === 'jobs' ? qTab : 'info'
+      void openDrawer(target, tab)
+    }
+  }
 })
 
 onUnmounted(() => {
@@ -986,12 +997,15 @@ onUnmounted(() => {
               </td>
 
               <td class="px-4 py-4">
-                <span
-                  class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium tabular-nums"
+                <button
+                  type="button"
+                  title="查看或配置部署目标与日志"
+                  class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium tabular-nums transition hover:ring-1 hover:ring-indigo-300"
                   :class="syncBadge(c).cls"
+                  @click.stop="openDrawer(c, 'deployments')"
                 >
                   {{ syncBadge(c).text }}
-                </span>
+                </button>
               </td>
 
               <td class="px-5 py-4 text-right" @click.stop>
@@ -1004,6 +1018,14 @@ onUnmounted(() => {
                   >
                     <Play class="h-3 w-3" />
                     {{ c.status === 'pending' ? '签发' : '续期' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    @click="openDrawer(c, 'deployments')"
+                  >
+                    <Send class="h-3 w-3 text-slate-500" />
+                    部署
                   </button>
                   <button
                     type="button"

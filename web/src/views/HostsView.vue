@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   CheckCircle2,
   Container,
@@ -64,6 +64,7 @@ import type {
 } from '@/types/api'
 
 const route = useRoute()
+const router = useRouter()
 
 // ============================================================================
 // Hosts List & Selection
@@ -1179,6 +1180,14 @@ onMounted(() => {
                     >
                       <FileText class="h-3 w-3" />
                       日志
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      @click="router.push({ path: '/certificates', query: { certId: String(d.certificate_id), tab: 'deployments' } })"
+                    >
+                      <Edit3 class="h-3 w-3 text-slate-500" />
+                      管理目标
                     </button>
                   </div>
                 </div>
