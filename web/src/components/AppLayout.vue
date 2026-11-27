@@ -64,10 +64,10 @@ async function handleLogout() {
 
     <!-- Sidebar -->
     <aside
-      class="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-200 bg-white transition-transform duration-200 lg:static lg:translate-x-0"
+      class="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-200 bg-white transition-transform duration-200 lg:sticky lg:top-0 lg:h-screen lg:shrink-0 lg:translate-x-0"
       :class="mobileOpen ? 'translate-x-0' : '-translate-x-full'"
     >
-      <div class="flex h-16 items-center justify-between border-b border-slate-200 px-5">
+      <div class="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 px-5">
         <router-link to="/" class="flex items-center gap-2.5">
           <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-sm">
             <ShieldCheck class="h-5 w-5" />
@@ -86,7 +86,7 @@ async function handleLogout() {
         </button>
       </div>
 
-      <nav class="flex-1 space-y-1 px-3 py-4">
+      <nav class="flex-1 space-y-1 overflow-y-auto px-3 py-4">
         <router-link
           v-for="item in navItems"
           :key="item.path"
@@ -108,7 +108,7 @@ async function handleLogout() {
         </router-link>
       </nav>
 
-      <div class="border-t border-slate-200 p-4">
+      <div class="shrink-0 border-t border-slate-200 p-4">
         <div class="mb-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
           <div class="flex items-center justify-between">
             <span class="font-medium text-slate-700">管理员会话</span>
