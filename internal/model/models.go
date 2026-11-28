@@ -471,6 +471,16 @@ type DNSZonesResponse struct {
 	MatchedZone string    `json:"matched_zone"`
 }
 
+type TestDNSAdhocRequest struct {
+	CredentialID int64  `json:"credential_id,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Provider     string `json:"provider"`
+	APIToken     string `json:"api_token,omitempty"`
+	AccessKey    string `json:"access_key,omitempty"`
+	SecretKey    string `json:"secret_key,omitempty"`
+	Region       string `json:"region,omitempty"`
+}
+
 // ============================================================================
 // Certificate & Job DTOs
 // ============================================================================
@@ -811,6 +821,58 @@ type CaddyContainerInfo struct {
 	InspectedAt   time.Time `json:"inspected_at"`
 }
 
+type DetectedContainer struct {
+	Name    string `json:"name"`
+	Image   string `json:"image"`
+	State   string `json:"state"`
+	Status  string `json:"status"`
+	Running bool   `json:"running"`
+	IsCaddy bool   `json:"is_caddy"`
+}
+
+type DetectedCaddyConfig struct {
+	ContainerName           string `json:"container_name"`
+	HostCaddyfile           string `json:"host_caddyfile,omitempty"`
+	ContainerCaddyfile      string `json:"container_caddyfile,omitempty"`
+	HostCertDir             string `json:"host_cert_dir,omitempty"`
+	ContainerCertDir        string `json:"container_cert_dir,omitempty"`
+	MountType               string `json:"mount_type,omitempty"`
+}
+
+type HostProbeRequest struct {
+	HostID                  int64  `json:"host_id,omitempty"`
+	Name                    string `json:"name,omitempty"`
+	Mode                    string `json:"mode,omitempty"`
+	Host                    string `json:"host,omitempty"`
+	Port                    int    `json:"port,omitempty"`
+	Username                string `json:"username,omitempty"`
+	AuthType                string `json:"auth_type,omitempty"`
+	SSHPrivateKey           string `json:"ssh_private_key,omitempty"`
+	SSHPassphrase           string `json:"ssh_passphrase,omitempty"`
+	SSHPassword             string `json:"ssh_password,omitempty"`
+	HostKeyPolicy           string `json:"host_key_policy,omitempty"`
+	CaddyEnabled            *bool  `json:"caddy_enabled,omitempty"`
+	CaddyContainer          string `json:"caddy_container,omitempty"`
+	CaddyHostCaddyfile      string `json:"caddy_host_caddyfile,omitempty"`
+	CaddyContainerCaddyfile string `json:"caddy_container_caddyfile,omitempty"`
+	CaddyHostCertDir        string `json:"caddy_host_cert_dir,omitempty"`
+	CaddyContainerCertDir   string `json:"caddy_container_cert_dir,omitempty"`
+	TargetContainer         string `json:"target_container,omitempty"`
+}
+
+type DiscoverCaddyRequest struct {
+	ContainerName string `json:"container_name,omitempty"`
+}
+
+type DiscoverCaddyResponse struct {
+	DockerOK            bool                 `json:"docker_ok"`
+	CaddyIssueCode      string               `json:"caddy_issue_code,omitempty"`
+	CaddyfileExists     *bool                `json:"caddyfile_exists,omitempty"`
+	DetectedContainers  []DetectedContainer  `json:"detected_containers"`
+	DetectedCaddyConfig *DetectedCaddyConfig `json:"detected_caddy_config,omitempty"`
+	Message             string               `json:"message"`
+}
+
 // ============================================================================
 // Webhook DTOs
 // ============================================================================
@@ -939,6 +1001,7 @@ type SettingsDTO struct {
 	ExpiringWarnDays int    `json:"expiring_warn_days"`
 	LogRetentionDays int    `json:"log_retention_days"`
 	LogMaxRows       int    `json:"log_max_rows"`
+	Timezone         string `json:"timezone,omitempty"`
 }
 
 type UpdateSettingsRequest struct {

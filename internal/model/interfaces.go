@@ -15,13 +15,31 @@ type ExecResult struct {
 
 // HostTestResult describes the result of testing SSH/Local connectivity and Docker/Caddy status.
 type HostTestResult struct {
-	SSHOK              bool   `json:"ssh_ok"`
-	DockerOK           bool   `json:"docker_ok"`
-	CaddyRunning       bool   `json:"caddy_running"`
-	HostKeyFingerprint string `json:"host_key_fingerprint"`
-	HostKeyStatus      string `json:"host_key_status"` // trusted | pinned | changed | insecure | local
-	Message            string `json:"message"`
-	CaddyVersion       string `json:"caddy_version,omitempty"`
+	SSHOK               bool                 `json:"ssh_ok"`
+	DockerOK            bool                 `json:"docker_ok"`
+	CaddyRunning        bool                 `json:"caddy_running"`
+	HostKeyFingerprint  string               `json:"host_key_fingerprint"`
+	HostKeyStatus       string               `json:"host_key_status"` // trusted | pinned | changed | insecure | local
+	Message             string               `json:"message"`
+	CaddyVersion        string               `json:"caddy_version,omitempty"`
+	CaddyIssueCode      string               `json:"caddy_issue_code,omitempty"`
+	CaddyfileExists     *bool                `json:"caddyfile_exists,omitempty"`
+	DetectedContainers  []DetectedContainer  `json:"detected_containers,omitempty"`
+	DetectedCaddyConfig *DetectedCaddyConfig `json:"detected_caddy_config,omitempty"`
+}
+
+// TransportSessionScoper is optionally implemented by RemoteTransport to reuse
+// a single SSH/SFTP connection across multiple operations in one workflow.
+type TransportSessionScoper interface {
+	WithSession(ctx context.Context, host *Host, fn func(context.Context) error) error
+}
+
+// WithTransportSession runs fn inside a pooled/reused transport session when supported.
+func WithTransportSession(ctx context.Context, transport RemoteTransport, host *Host, fn func(context.Context) error) error {
+	if scoper, ok := transport.(TransportSessionScoper); ok && scoper != nil {
+		return scoper.WithSession(ctx, host, fn)
+	}
+	return fn(ctx)
 }
 
 // Notifier dispatches Webhook events asynchronously/with retries and handles test notifications.

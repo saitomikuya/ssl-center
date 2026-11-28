@@ -480,3 +480,88 @@ func TestLocalTransport_CaddyEnabledInvalidContainerPersistsNotOK(t *testing.T) 
 		t.Fatalf("expected dashboard reachable=0 unreachable=1, got %+v", hs)
 	}
 }
+
+func TestSSHTransport_WithSession_ReusesSingleConnection(t *testing.T) {
+	ctx := context.Background()
+	database, cipher, redactor := setupTestDBAndCrypto(t)
+
+	privPEM, pubKey := generateClientSSHKeyPair(t, "")
+	srv := newMockSSHServer(t, pubKey, "")
+	srv.SetExecHandler(func(cmd string, stdin []byte) (string, string, int) {
+		return "ok", "", 0
+	})
+	tr := deploy.NewTransport(database, cipher, redactor, nil)
+	host := createSSHTestHost(t, database, cipher, srv, model.HostAuthKey, privPEM, "", "", model.HostKeyPolicyInsecure, "")
+
+	target := filepath.Join(t.TempDir(), "Caddyfile")
+	err := tr.WithSession(ctx, host, func(sCtx context.Context) error {
+		if err := tr.WriteFileAtomic(sCtx, host, target, []byte("example.com {\n}\n"), 0o644); err != nil {
+			return err
+		}
+		if _, err := tr.ReadFile(sCtx, host, target); err != nil {
+			return err
+		}
+		if _, err := tr.Exec(sCtx, host, "echo hello"); err != nil {
+			return err
+		}
+		return tr.RemoveFile(sCtx, host, target)
+	})
+	if err != nil {
+		t.Fatalf("WithSession failed: %v", err)
+	}
+	if srv.ConnCount() != 1 {
+		t.Fatalf("expected exactly 1 SSH connection across pooled operations, got %d", srv.ConnCount())
+	}
+}
+
+func TestSSHTransport_CaddyDiagnosticsAndDiscovery(t *testing.T) {
+	ctx := context.Background()
+	database, cipher, redactor := setupTestDBAndCrypto(t)
+
+	privPEM, pubKey := generateClientSSHKeyPair(t, "")
+	srv := newMockSSHServer(t, pubKey, "")
+	srv.SetExecHandler(func(cmd string, stdin []byte) (string, string, int) {
+		switch {
+		case strings.Contains(cmd, "docker info"):
+			return "26.1.0\n", "", 0
+		case strings.Contains(cmd, "docker ps -a"):
+			return "my-caddy\tcaddy:2-alpine\trunning\tUp 2 days\nredis\tredis:7\trunning\tUp 5 days\n", "", 0
+		case strings.Contains(cmd, "docker inspect") && strings.Contains(cmd, "'caddy'"):
+			return "", "Error: No such object: caddy\n", 1
+		case strings.Contains(cmd, "docker inspect") && strings.Contains(cmd, "'my-caddy'"):
+			return `{"State":{"Status":"running","Running":true,"Restarting":false},"Config":{"Image":"caddy:2-alpine"},"Mounts":[{"Type":"bind","Source":"/home/caddy/conf","Destination":"/etc/caddy","Mode":"","RW":true},{"Type":"bind","Source":"/home/caddy/certs","Destination":"/certs","Mode":"","RW":true}]}`, "", 0
+		case strings.Contains(cmd, "caddy version"):
+			return "v2.11.4\n", "", 0
+		default:
+			return "", "", 1
+		}
+	})
+
+	tr := deploy.NewTransport(database, cipher, redactor, nil)
+	host := createSSHTestHost(t, database, cipher, srv, model.HostAuthKey, privPEM, "", "", model.HostKeyPolicyInsecure, "")
+
+	res, err := tr.TestConnection(ctx, host)
+	if err != nil {
+		t.Fatalf("TestConnection: %v", err)
+	}
+	if !res.SSHOK || !res.DockerOK || res.CaddyRunning {
+		t.Fatalf("unexpected test result: %+v", res)
+	}
+	if res.CaddyIssueCode != "container_not_found" {
+		t.Fatalf("CaddyIssueCode = %q, want container_not_found", res.CaddyIssueCode)
+	}
+	if len(res.DetectedContainers) != 2 || !res.DetectedContainers[0].IsCaddy || res.DetectedContainers[0].Name != "my-caddy" {
+		t.Fatalf("unexpected DetectedContainers: %+v", res.DetectedContainers)
+	}
+	if res.DetectedCaddyConfig == nil || res.DetectedCaddyConfig.HostCaddyfile != "/home/caddy/conf/Caddyfile" || res.DetectedCaddyConfig.HostCertDir != "/home/caddy/certs" {
+		t.Fatalf("unexpected DetectedCaddyConfig: %+v", res.DetectedCaddyConfig)
+	}
+
+	disc, err := tr.DiscoverCaddy(ctx, host, "my-caddy")
+	if err != nil {
+		t.Fatalf("DiscoverCaddy: %v", err)
+	}
+	if !disc.DockerOK || disc.DetectedCaddyConfig == nil || disc.DetectedCaddyConfig.ContainerName != "my-caddy" {
+		t.Fatalf("unexpected DiscoverCaddy response: %+v", disc)
+	}
+}

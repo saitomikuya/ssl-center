@@ -447,6 +447,142 @@ func TestFullAssembledRouterEndToEnd(t *testing.T) {
 	}
 }
 
+func TestRouter_Gzip_Checklist_Probe_And_Timezone(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	cfg := &config.Config{
+		DataDir:      dataDir,
+		ListenAddr:   ":0",
+		InitPassword: "StrongInitialPassword123!",
+		CookieSecure: config.CookieSecureFalse,
+		LogLevel:     "error",
+		TZ:           "Asia/Shanghai",
+	}
+	if err := cfg.EnsureDataDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	masterKey := bytes.Repeat([]byte{0x22}, crypto.MasterKeySize)
+	cipher, _ := crypto.NewCipher(masterKey)
+	redactor := crypto.NewSecretRedactor()
+	authSvc := auth.NewService(database, cfg, nil)
+	if _, err := authSvc.BootstrapAdmin(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	transport := deploy.NewTransport(database, cipher, redactor, nil)
+	dnsSvc := acme.NewDNSService(database, cipher, redactor)
+	router := NewRouter(RouterDeps{
+		Config:     cfg,
+		DB:         database,
+		Cipher:     cipher,
+		Redactor:   redactor,
+		Auth:       authSvc,
+		Transport:  transport,
+		DNSService: dnsSvc,
+	})
+
+	// Login
+	rec := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"password":"StrongInitialPassword123!"}`))
+	loginReq.RemoteAddr = "127.0.0.1:12345"
+	router.ServeHTTP(rec, loginReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login status=%d", rec.Code)
+	}
+	var loginResp model.AuthMeResponse
+	mustDecodeData(t, rec.Body.Bytes(), &loginResp)
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.SessionCookieName {
+			sessionCookie = c
+			break
+		}
+	}
+
+	// Gzip compressed dashboard & verify checklist hrefs
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.AddCookie(sessionCookie)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status=%d", rec.Code)
+	}
+	if rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("expected Content-Encoding: gzip, got %q", rec.Header().Get("Content-Encoding"))
+	}
+	gz, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	plainDash, err := io.ReadAll(gz)
+	_ = gz.Close()
+	if err != nil {
+		t.Fatalf("read gzipped dashboard: %v", err)
+	}
+	var dash model.DashboardResponse
+	mustDecodeData(t, plainDash, &dash)
+	hrefByKey := map[string]string{}
+	for _, item := range dash.Checklist {
+		hrefByKey[item.Key] = item.Href
+	}
+	if hrefByKey["dns_credential"] != "/credentials?tab=dns" {
+		t.Fatalf("dns_credential href = %q, want /credentials?tab=dns", hrefByKey["dns_credential"])
+	}
+	if hrefByKey["deployment"] != "/certificates" {
+		t.Fatalf("deployment href = %q, want /certificates", hrefByKey["deployment"])
+	}
+
+	// Settings includes timezone
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/settings", nil)
+	req.AddCookie(sessionCookie)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings status=%d", rec.Code)
+	}
+	var settings model.SettingsDTO
+	mustDecodeData(t, rec.Body.Bytes(), &settings)
+	if settings.Timezone == "" {
+		t.Fatal("expected non-empty timezone in SettingsDTO")
+	}
+
+	// Probe local host via /api/v1/hosts/probe
+	localHost, err := database.GetLocalHost(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	probeReq := httptest.NewRequest(http.MethodPost, "/api/v1/hosts/probe", bytes.NewBufferString(fmt.Sprintf(`{"host_id":%d,"caddy_enabled":false}`, localHost.ID)))
+	probeReq.AddCookie(sessionCookie)
+	probeReq.Header.Set("X-CSRF-Token", loginResp.CSRFToken)
+	router.ServeHTTP(rec, probeReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("probe local host status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var probeRes model.HostTestResult
+	mustDecodeData(t, rec.Body.Bytes(), &probeRes)
+	if !probeRes.SSHOK || probeRes.HostKeyStatus != "local" {
+		t.Fatalf("unexpected probeRes: %+v", probeRes)
+	}
+
+	// Adhoc DNS test validation error on missing token
+	rec = httptest.NewRecorder()
+	dnsTestReq := httptest.NewRequest(http.MethodPost, "/api/v1/dns-credentials/test", bytes.NewBufferString(`{"provider":"cloudflare"}`))
+	dnsTestReq.AddCookie(sessionCookie)
+	dnsTestReq.Header.Set("X-CSRF-Token", loginResp.CSRFToken)
+	router.ServeHTTP(rec, dnsTestReq)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty adhoc token, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func mustDecodeData(t *testing.T, body []byte, dst any) {
 	t.Helper()
 	env := decodeEnvelope(t, body)

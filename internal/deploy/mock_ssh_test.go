@@ -34,6 +34,7 @@ type mockSSHServer struct {
 	execHandler        mockSSHExecFunc
 	executedCmds       []string
 	inMemSFTP          sftp.Handlers
+	connCount          int
 
 	wg     sync.WaitGroup
 	closed bool
@@ -117,6 +118,12 @@ func (s *mockSSHServer) ExecutedCommands() []string {
 	return out
 }
 
+func (s *mockSSHServer) ConnCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.connCount
+}
+
 func (s *mockSSHServer) serve() {
 	defer s.wg.Done()
 	for {
@@ -136,6 +143,7 @@ func (s *mockSSHServer) handleConn(rawConn net.Conn) {
 	defer rawConn.Close()
 
 	s.mu.Lock()
+	s.connCount++
 	signer := s.hostSigner
 	allowedPub := s.allowedPubKey
 	allowedPass := s.allowedPassword

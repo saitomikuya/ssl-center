@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,10 @@ import (
 	"ssl-center/internal/db"
 	"ssl-center/internal/model"
 )
+
+type caddyDiscoverer interface {
+	DiscoverCaddy(ctx context.Context, host *model.Host, targetContainer string) (*model.DiscoverCaddyResponse, error)
+}
 
 // HostHandler serves /api/v1/hosts endpoints.
 type HostHandler struct {
@@ -37,10 +42,13 @@ func (h *HostHandler) ListHosts(w http.ResponseWriter, r *http.Request) {
 		MapDBError(w, err)
 		return
 	}
+	counts, err := h.db.CountDeploymentsByHostMap(r.Context())
+	if err != nil {
+		counts = map[int64]int{}
+	}
 	out := make([]model.HostDTO, 0, len(hosts))
 	for i := range hosts {
-		cnt, _ := h.db.CountDeploymentsByHost(r.Context(), hosts[i].ID)
-		out = append(out, hostToDTO(&hosts[i], cnt))
+		out = append(out, hostToDTO(&hosts[i], counts[hosts[i].ID]))
 	}
 	OK(w, out)
 }
@@ -414,6 +422,171 @@ func (h *HostHandler) TestHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	OK(w, res)
+}
+
+// ProbeHost handles POST /api/v1/hosts/probe to test SSH/Docker/Caddy connectivity without saving.
+func (h *HostHandler) ProbeHost(w http.ResponseWriter, r *http.Request) {
+	var req model.HostProbeRequest
+	if err := BindJSON(r, &req); err != nil {
+		Fail(w, http.StatusBadRequest, CodeBadRequest, "Invalid JSON request body", nil)
+		return
+	}
+	if h.transport == nil {
+		Fail(w, http.StatusInternalServerError, CodeInternalError, "Remote transport is not configured", nil)
+		return
+	}
+
+	probe := &model.Host{
+		Name:                    defaultString(strings.TrimSpace(req.Name), "probe"),
+		Mode:                    defaultString(strings.TrimSpace(req.Mode), model.HostModeSSH),
+		Host:                    strings.TrimSpace(req.Host),
+		Port:                    req.Port,
+		Username:                defaultString(strings.TrimSpace(req.Username), "root"),
+		AuthType:                defaultString(strings.TrimSpace(req.AuthType), model.HostAuthKey),
+		HostKeyPolicy:           defaultString(strings.TrimSpace(req.HostKeyPolicy), model.HostKeyPolicyTOFU),
+		CaddyEnabled:            true,
+		CaddyContainer:          defaultString(strings.TrimSpace(req.CaddyContainer), "caddy"),
+		CaddyHostCaddyfile:      defaultString(strings.TrimSpace(req.CaddyHostCaddyfile), "/opt/caddy/Caddyfile"),
+		CaddyContainerCaddyfile: defaultString(strings.TrimSpace(req.CaddyContainerCaddyfile), "/etc/caddy/Caddyfile"),
+		CaddyHostCertDir:        defaultString(strings.TrimSpace(req.CaddyHostCertDir), "/opt/caddy/certs"),
+		CaddyContainerCertDir:   defaultString(strings.TrimSpace(req.CaddyContainerCertDir), "/certs"),
+	}
+	if req.CaddyEnabled != nil {
+		probe.CaddyEnabled = *req.CaddyEnabled
+	}
+	if strings.TrimSpace(req.TargetContainer) != "" {
+		probe.CaddyContainer = strings.TrimSpace(req.TargetContainer)
+	}
+
+	if req.HostID > 0 {
+		existing, err := h.db.GetHost(r.Context(), req.HostID)
+		if err != nil {
+			MapDBError(w, err)
+			return
+		}
+		probe.IsLocal = existing.IsLocal
+		if existing.IsLocal {
+			probe.Mode = existing.Mode
+		}
+		if probe.Host == "" {
+			probe.Host = existing.Host
+		}
+		if probe.Port == 0 {
+			probe.Port = existing.Port
+		}
+		if strings.TrimSpace(req.Username) == "" {
+			probe.Username = existing.Username
+		}
+		if strings.TrimSpace(req.AuthType) == "" {
+			probe.AuthType = existing.AuthType
+		}
+		if strings.TrimSpace(req.HostKeyPolicy) == "" {
+			probe.HostKeyPolicy = existing.HostKeyPolicy
+		}
+		probe.HostKeyFingerprint = existing.HostKeyFingerprint
+		probe.SSHPrivateKeyEnc = existing.SSHPrivateKeyEnc
+		probe.SSHPassphraseEnc = existing.SSHPassphraseEnc
+		probe.SSHPasswordEnc = existing.SSHPasswordEnc
+	}
+
+	if !probe.IsLocal {
+		if probe.Host == "" {
+			Fail(w, http.StatusBadRequest, CodeBadRequest, "SSH host address is required", nil)
+			return
+		}
+		if probe.Port == 0 {
+			probe.Port = 22
+		}
+		if probe.Port < 1 || probe.Port > 65535 {
+			Fail(w, http.StatusBadRequest, CodeBadRequest, "Port must be between 1 and 65535", nil)
+			return
+		}
+		var tempSecrets []string
+		if strings.TrimSpace(req.SSHPrivateKey) != "" {
+			enc, err := h.encryptHostSecret(req.SSHPrivateKey, "hosts:ssh_private_key_enc")
+			if err != nil {
+				Fail(w, http.StatusInternalServerError, CodeInternalError, "Failed to encrypt SSH private key", nil)
+				return
+			}
+			probe.SSHPrivateKeyEnc = enc
+			tempSecrets = append(tempSecrets, req.SSHPrivateKey)
+		}
+		if req.SSHPassphrase != "" {
+			enc, err := h.encryptHostSecret(req.SSHPassphrase, "hosts:ssh_passphrase_enc")
+			if err != nil {
+				Fail(w, http.StatusInternalServerError, CodeInternalError, "Failed to encrypt SSH passphrase", nil)
+				return
+			}
+			probe.SSHPassphraseEnc = enc
+			tempSecrets = append(tempSecrets, req.SSHPassphrase)
+		}
+		if req.SSHPassword != "" {
+			enc, err := h.encryptHostSecret(req.SSHPassword, "hosts:ssh_password_enc")
+			if err != nil {
+				Fail(w, http.StatusInternalServerError, CodeInternalError, "Failed to encrypt SSH password", nil)
+				return
+			}
+			probe.SSHPasswordEnc = enc
+			tempSecrets = append(tempSecrets, req.SSHPassword)
+		}
+		if h.redactor != nil && len(tempSecrets) > 0 {
+			h.redactor.Add(tempSecrets...)
+			defer h.redactor.Remove(tempSecrets...)
+		}
+		if probe.AuthType == model.HostAuthKey && probe.SSHPrivateKeyEnc == "" {
+			Fail(w, http.StatusBadRequest, CodeBadRequest, "ssh_private_key is required for key authentication", nil)
+			return
+		}
+		if probe.AuthType == model.HostAuthPassword && probe.SSHPasswordEnc == "" {
+			Fail(w, http.StatusBadRequest, CodeBadRequest, "ssh_password is required for password authentication", nil)
+			return
+		}
+	}
+
+	res, err := h.transport.TestConnection(r.Context(), probe)
+	if res == nil && err != nil {
+		Fail(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)
+		return
+	}
+	OK(w, res)
+}
+
+// DiscoverCaddy handles POST /api/v1/hosts/{id}/discover-caddy.
+func (h *HostHandler) DiscoverCaddy(w http.ResponseWriter, r *http.Request) {
+	id, err := URLParamInt64(r, "id")
+	if err != nil {
+		Fail(w, http.StatusBadRequest, CodeBadRequest, err.Error(), nil)
+		return
+	}
+	host, err := h.db.GetHost(r.Context(), id)
+	if err != nil {
+		MapDBError(w, err)
+		return
+	}
+	if h.transport == nil {
+		Fail(w, http.StatusInternalServerError, CodeInternalError, "Remote transport is not configured", nil)
+		return
+	}
+
+	var req model.DiscoverCaddyRequest
+	if r.Body != nil {
+		if bindErr := BindJSON(r, &req); bindErr != nil && !errors.Is(bindErr, io.EOF) {
+			Fail(w, http.StatusBadRequest, CodeBadRequest, "Invalid JSON request body", nil)
+			return
+		}
+	}
+
+	disc, ok := h.transport.(caddyDiscoverer)
+	if !ok {
+		Fail(w, http.StatusNotImplemented, CodeInternalError, "Caddy discovery is not supported by current transport", nil)
+		return
+	}
+	resp, err := disc.DiscoverCaddy(r.Context(), host, req.ContainerName)
+	if err != nil {
+		Fail(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)
+		return
+	}
+	OK(w, resp)
 }
 
 // ResetHostKey handles POST /api/v1/hosts/{id}/reset-host-key.

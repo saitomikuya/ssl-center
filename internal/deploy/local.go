@@ -24,58 +24,15 @@ func (t *Transport) testLocalConnection(ctx context.Context, host *model.Host) (
 	checkOK := true
 
 	if host.CaddyEnabled {
-		container := strings.TrimSpace(host.CaddyContainer)
-		if container == "" {
-			container = "caddy"
+		runner := func(cmd string) (*model.ExecResult, error) {
+			return t.execLocal(ctx, cmd, nil)
 		}
-		if err := model.ValidateContainerName(container); err != nil {
-			checkOK = false
-			res.Message = t.redact(fmt.Sprintf("Local host OK; invalid Caddy container name: %v", err))
-			t.persistCheckResult(ctx, host, checkOK, res.Message, caddyStatus)
-			return res, nil
+		existsFn := func(filePath string) *bool {
+			_, statErr := os.Stat(filepath.Clean(filePath))
+			exists := statErr == nil
+			return &exists
 		}
-
-		infoRes, infoErr := t.execLocal(ctx, "docker info --format '{{.ServerVersion}}'", nil)
-		if isDockerDaemonAvailable(infoRes, infoErr) {
-			res.DockerOK = true
-			inspectCmd := fmt.Sprintf("docker inspect --format '{{.State.Running}}' %s", model.ShellQuote(container))
-			inspectRes, inspectErr := t.execLocal(ctx, inspectCmd, nil)
-			if inspectErr == nil && inspectRes != nil && inspectRes.ExitCode == 0 {
-				running := strings.EqualFold(strings.TrimSpace(inspectRes.Stdout), "true")
-				res.CaddyRunning = running
-				if running {
-					caddyStatus = model.CaddyStatusRunning
-					verCmd := fmt.Sprintf("docker exec %s caddy version", model.ShellQuote(container))
-					if verRes, verErr := t.execLocal(ctx, verCmd, nil); verErr == nil && verRes != nil && verRes.ExitCode == 0 {
-						res.CaddyVersion = strings.TrimSpace(verRes.Stdout)
-					}
-					res.Message = "Local host OK; Docker OK; Caddy container running"
-				} else {
-					caddyStatus = model.CaddyStatusStopped
-					res.Message = fmt.Sprintf("Local host OK; Docker OK; Caddy container %q is stopped", container)
-				}
-			} else {
-				checkOK = false
-				caddyStatus = model.CaddyStatusUnknown
-				detail := ""
-				if inspectRes != nil {
-					detail = strings.TrimSpace(firstNonEmpty(inspectRes.Stderr, inspectRes.Stdout))
-				}
-				res.Message = fmt.Sprintf("Local host OK; Docker OK; Caddy container %q inspect failed: %s", container, detail)
-			}
-		} else {
-			checkOK = false
-			detail := ""
-			if infoErr != nil {
-				detail = infoErr.Error()
-			} else if infoRes != nil {
-				detail = strings.TrimSpace(firstNonEmpty(infoRes.Stderr, infoRes.Stdout))
-			}
-			if detail == "" {
-				detail = "empty server version from docker info"
-			}
-			res.Message = fmt.Sprintf("Local host OK; Docker unavailable: %s", detail)
-		}
+		caddyStatus, checkOK = t.diagnoseCaddy(host, res, true, runner, existsFn)
 	}
 
 	res.Message = t.redact(res.Message)

@@ -2,7 +2,9 @@ import { apiRequest } from './client'
 import type {
   CreateHostRequest,
   DeploymentDTO,
+  DiscoverCaddyResponse,
   HostDTO,
+  HostProbeRequest,
   HostTestResult,
   UpdateHostRequest,
 } from '@/types/api'
@@ -38,6 +40,20 @@ export function deleteHost(id: number) {
 export function testHostConnection(id: number) {
   return apiRequest<HostTestResult>(`/hosts/${id}/test`, {
     method: 'POST',
+  })
+}
+
+export function probeHost(req: HostProbeRequest) {
+  return apiRequest<HostTestResult>('/hosts/probe', {
+    method: 'POST',
+    body: req,
+  })
+}
+
+export function discoverHostCaddy(id: number, containerName?: string) {
+  return apiRequest<DiscoverCaddyResponse>(`/hosts/${id}/discover-caddy`, {
+    method: 'POST',
+    body: containerName ? { container_name: containerName } : {},
   })
 }
 

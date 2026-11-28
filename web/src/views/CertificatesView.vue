@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Circle,
   Copy,
   Download,
   Edit3,
+  ExternalLink,
+  FileCode2,
   FileText,
   Key,
   Loader2,
@@ -79,6 +84,7 @@ const DEFAULT_STAGES: CertJobStage[] = [
 // Main List State
 // ============================================================================
 const route = useRoute()
+const router = useRouter()
 const certs = ref<CertificateDTO[]>([])
 const caList = ref<CAAccountDTO[]>([])
 const dnsList = ref<DNSCredentialDTO[]>([])
@@ -159,8 +165,8 @@ function daysProgressPercent(c: CertificateDTO): number {
 
 function daysProgressColor(c: CertificateDTO): string {
   if (c.days_remaining === undefined || c.days_remaining === null) return 'bg-slate-300'
-  if (c.days_remaining <= 0) return 'bg-rose-500'
-  if (c.days_remaining <= c.renew_before_days) return 'bg-amber-500'
+  if (c.days_remaining <= 0 || c.status === 'expired' || c.status === 'error') return 'bg-rose-500'
+  if (c.status === 'expiring' || c.days_remaining <= 14) return 'bg-amber-500'
   return 'bg-emerald-500'
 }
 
@@ -170,8 +176,12 @@ function daysProgressColor(c: CertificateDTO): string {
 const certModalOpen = ref(false)
 const editingCert = ref<CertificateDTO | null>(null)
 const certSaving = ref(false)
+const certAdvancedOpen = ref(false)
+const includeWildcard = ref(false)
 const matchedZoneHint = ref('')
 const zonePreviewLoading = ref(false)
+let zonePreviewTimer: number | null = null
+let zonePreviewSeq = 0
 
 const certForm = reactive({
   name: '',
@@ -185,8 +195,30 @@ const certForm = reactive({
   auto_renew: true,
 })
 
+function wildcardForDomain(domain: string): string {
+  const clean = domain.trim().replace(/^\*\./, '')
+  return clean && clean.includes('.') ? `*.${clean}` : ''
+}
+
+function syncWildcardInSANs(enabled: boolean) {
+  const wild = wildcardForDomain(certForm.domain)
+  if (!wild) return
+  const list = parseSANs(certForm.sansText)
+  if (enabled) {
+    if (!list.includes(wild)) {
+      list.unshift(wild)
+    }
+  } else {
+    const idx = list.indexOf(wild)
+    if (idx !== -1) list.splice(idx, 1)
+  }
+  certForm.sansText = list.join('\n')
+}
+
 function openCreateCert() {
   editingCert.value = null
+  certAdvancedOpen.value = false
+  includeWildcard.value = false
   const defaultCA = caList.value.find((c) => c.is_default) || caList.value[0]
   const defaultDNS = dnsList.value[0]
   Object.assign(certForm, {
@@ -206,6 +238,9 @@ function openCreateCert() {
 
 function openEditCert(c: CertificateDTO) {
   editingCert.value = c
+  certAdvancedOpen.value = false
+  const wild = wildcardForDomain(c.domain)
+  includeWildcard.value = Boolean(wild && (c.sans || []).includes(wild))
   Object.assign(certForm, {
     name: c.name,
     domain: c.domain,
@@ -226,23 +261,34 @@ async function previewMatchedZone() {
   const domain = certForm.domain.trim()
   if (!credId || !domain || !domain.includes('.')) {
     matchedZoneHint.value = ''
+    zonePreviewLoading.value = false
     return
   }
+  const seq = ++zonePreviewSeq
   zonePreviewLoading.value = true
   try {
     const res = await matchDNSZones(credId, domain)
+    if (seq !== zonePreviewSeq) return
     matchedZoneHint.value = res.matched_zone || '未匹配到可见 Zone'
   } catch {
-    matchedZoneHint.value = ''
+    if (seq === zonePreviewSeq) matchedZoneHint.value = ''
   } finally {
-    zonePreviewLoading.value = false
+    if (seq === zonePreviewSeq) zonePreviewLoading.value = false
   }
 }
 
 watch([() => certForm.dns_credential_id, () => certForm.domain], () => {
-  if (certModalOpen.value) {
-    void previewMatchedZone()
+  if (zonePreviewTimer !== null) {
+    window.clearTimeout(zonePreviewTimer)
+    zonePreviewTimer = null
   }
+  if (!certModalOpen.value) return
+  if (includeWildcard.value) {
+    syncWildcardInSANs(true)
+  }
+  zonePreviewTimer = window.setTimeout(() => {
+    void previewMatchedZone()
+  }, 500)
 })
 
 function parseSANs(text: string): string[] {
@@ -256,14 +302,14 @@ function parseSANs(text: string): string[] {
   )
 }
 
-async function submitCert() {
+async function submitCert(issueNow = false) {
   const domain = certForm.domain.trim()
   if (!domain) {
     showToast('warning', '请填写主域名')
     return
   }
   if (!certForm.ca_account_id || !certForm.dns_credential_id) {
-    showToast('warning', '请选择 CA 账户与 DNS 凭据')
+    showToast('warning', '请先选择 CA 账户与 DNS 凭据')
     return
   }
 
@@ -285,8 +331,10 @@ async function submitCert() {
         auto_renew: certForm.auto_renew,
       })
       showToast('success', '证书配置已更新')
+      certModalOpen.value = false
+      await loadAll()
     } else {
-      await createCertificate({
+      const created = await createCertificate({
         name,
         domain,
         sans,
@@ -297,10 +345,15 @@ async function submitCert() {
         renew_before_days: Number(certForm.renew_before_days),
         auto_renew: certForm.auto_renew,
       })
-      showToast('success', '证书已创建')
+      certModalOpen.value = false
+      if (issueNow) {
+        showToast('success', '证书已创建，正在触发签发...')
+        await handleIssueCert(created)
+      } else {
+        showToast('success', '证书已创建')
+        await loadAll()
+      }
     }
-    certModalOpen.value = false
-    await loadAll()
   } catch (err) {
     showToast('error', err instanceof Error ? err.message : '保存证书失败')
   } finally {
@@ -309,20 +362,41 @@ async function submitCert() {
 }
 
 // ============================================================================
-// Certificate Detail Drawer (3 Tabs)
+// Certificate Detail Drawer (Unified 3 Tabs)
 // ============================================================================
 const drawerOpen = ref(false)
-const drawerMode = ref<'detail' | 'deployments'>('detail')
 const drawerTab = ref<'info' | 'jobs' | 'deployments'>('info')
 const selectedCert = ref<CertificateDTO | null>(null)
+const loadedJobsCertId = ref<number | null>(null)
+const loadedDepsCertId = ref<number | null>(null)
 
 async function openDrawer(c: CertificateDTO, tab: 'info' | 'jobs' | 'deployments' = 'info') {
+  const isNewCert = selectedCert.value?.id !== c.id
   selectedCert.value = c
-  drawerMode.value = tab === 'deployments' ? 'deployments' : 'detail'
   drawerTab.value = tab
   drawerOpen.value = true
-  await Promise.all([refreshCertDetail(c.id), loadJobs(c.id), loadCertDeployments(c.id)])
+  if (isNewCert) {
+    loadedJobsCertId.value = null
+    loadedDepsCertId.value = null
+  }
+  const tasks: Promise<unknown>[] = [refreshCertDetail(c.id)]
+  if (tab === 'jobs') {
+    tasks.push(loadJobs(c.id))
+  } else if (tab === 'deployments') {
+    tasks.push(loadCertDeployments(c.id))
+  }
+  await Promise.all(tasks)
 }
+
+watch(drawerTab, (tab) => {
+  if (!drawerOpen.value || !selectedCert.value) return
+  const id = selectedCert.value.id
+  if (tab === 'jobs' && loadedJobsCertId.value !== id) {
+    void loadJobs(id)
+  } else if (tab === 'deployments' && loadedDepsCertId.value !== id) {
+    void loadCertDeployments(id)
+  }
+})
 
 async function refreshCertDetail(certId: number) {
   try {
@@ -413,6 +487,7 @@ async function loadJobs(certId: number, focusJobId?: number) {
   try {
     const list = await listCertificateJobs(certId)
     jobs.value = list
+    loadedJobsCertId.value = certId
     if (list.length === 0) {
       activeJob.value = null
       liveStages.value = [...DEFAULT_STAGES]
@@ -564,6 +639,7 @@ async function handleIssueCert(c: CertificateDTO) {
 const certDeployments = ref<DeploymentDTO[]>([])
 const deploymentsLoading = ref(false)
 const deployModalOpen = ref(false)
+const deployAdvancedOpen = ref(false)
 const editingDeploy = ref<DeploymentDTO | null>(null)
 const deploySaving = ref(false)
 const pushingDeployId = ref<number | null>(null)
@@ -591,12 +667,32 @@ async function loadCertDeployments(certId: number) {
   deploymentsLoading.value = true
   try {
     certDeployments.value = await listCertificateDeployments(certId)
+    loadedDepsCertId.value = certId
   } catch (err) {
     showToast('error', err instanceof Error ? err.message : '加载部署目标失败')
   } finally {
     deploymentsLoading.value = false
   }
 }
+
+const deployPreviewTlsSnippet = computed(() => {
+  if (!selectedCert.value) return ''
+  const host = hosts.value.find((h) => h.id === deployForm.host_id)
+  const hostRoot = (host?.caddy_host_cert_dir || '/opt/caddy/certs').replace(/\/+$/, '') || '/'
+  const containerRoot = (host?.caddy_container_cert_dir || '/certs').replace(/\/+$/, '') || '/'
+  const mapPath = (p: string) => {
+    const trimmed = p.trim()
+    if (!trimmed) return ''
+    if (trimmed.startsWith(`${hostRoot}/`)) {
+      const rel = trimmed.slice(hostRoot.length)
+      return containerRoot === '/' ? rel : `${containerRoot}${rel}`
+    }
+    return trimmed
+  }
+  const fc = mapPath(deployForm.fullchain_path)
+  const pk = mapPath(deployForm.privkey_path)
+  return fc && pk ? `tls ${fc} ${pk}` : ''
+})
 
 function applyDeploymentDefaultsForHost(hostId: number, template: DeployTemplate) {
   if (!selectedCert.value) return
@@ -638,6 +734,7 @@ function applyDeploymentDefaultsForHost(hostId: number, template: DeployTemplate
 function openCreateDeployment() {
   if (!selectedCert.value) return
   editingDeploy.value = null
+  deployAdvancedOpen.value = false
   const boundHostIds = new Set(certDeployments.value.map((d) => d.host_id))
   const firstHost =
     hosts.value.find((h) => !h.is_local && !boundHostIds.has(h.id)) ||
@@ -672,6 +769,7 @@ function openCreateDeployment() {
 
 function openEditDeployment(d: DeploymentDTO) {
   editingDeploy.value = d
+  deployAdvancedOpen.value = false
   Object.assign(deployForm, {
     host_id: d.host_id,
     name: d.name,
@@ -798,11 +896,13 @@ async function handlePushDeployment(d: DeploymentDTO) {
 // --- Deploy Logs Modal ---
 const logsModalOpen = ref(false)
 const logsTargetName = ref('')
+const logsTargetTlsEnabled = ref(true)
 const deployLogs = ref<DeployLog[]>([])
 const deployLogsLoading = ref(false)
 
 async function openDeployLogs(d: DeploymentDTO) {
   logsTargetName.value = d.name
+  logsTargetTlsEnabled.value = d.tls_verify_enabled
   logsModalOpen.value = true
   deployLogsLoading.value = true
   try {
@@ -1053,6 +1153,7 @@ onUnmounted(() => {
                   </button>
                   <button
                     type="button"
+                    aria-label="编辑证书配置"
                     class="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                     title="编辑配置"
                     @click="openEditCert(c)"
@@ -1061,6 +1162,7 @@ onUnmounted(() => {
                   </button>
                   <button
                     type="button"
+                    aria-label="删除证书"
                     class="rounded-lg border border-rose-200 p-1.5 text-rose-500 hover:bg-rose-50"
                     title="删除证书"
                     @click="requestDeleteCert(c)"
@@ -1079,15 +1181,41 @@ onUnmounted(() => {
     <ModalDialog
       :open="certModalOpen"
       :title="editingCert ? '编辑证书配置' : '新建证书'"
-      subtitle="修改主域名后将自动清理旧证书文件并重置签发状态"
+      :subtitle="editingCert ? '修改主域名后将自动清理旧证书文件并重置签发状态' : '填写主域名并选择 CA 与 DNS 凭据，支持一键包含泛域名并立即签发'"
       max-width="xl"
       @close="certModalOpen = false"
     >
-      <div class="space-y-4">
+      <form id="cert-modal-form" class="space-y-4" @submit.prevent="submitCert(false)">
+        <div
+          v-if="caList.length === 0 || dnsList.length === 0"
+          class="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-900"
+        >
+          <div class="font-semibold">前置凭据尚未配置完整</div>
+          <div class="flex flex-wrap gap-2">
+            <router-link
+              v-if="caList.length === 0"
+              to="/credentials?tab=ca"
+              class="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 font-medium text-indigo-700 ring-1 ring-amber-300 hover:bg-indigo-50"
+              @click="certModalOpen = false"
+            >
+              前往配置 CA 账户 <ExternalLink class="h-3 w-3" />
+            </router-link>
+            <router-link
+              v-if="dnsList.length === 0"
+              to="/credentials?tab=dns"
+              class="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 font-medium text-indigo-700 ring-1 ring-amber-300 hover:bg-indigo-50"
+              @click="certModalOpen = false"
+            >
+              前往配置 DNS 凭据 <ExternalLink class="h-3 w-3" />
+            </router-link>
+          </div>
+        </div>
+
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">主域名 (Primary Domain) *</label>
+            <label for="cert-domain" class="mb-1 block text-xs font-medium text-slate-700">主域名 (Primary Domain) *</label>
             <input
+              id="cert-domain"
               v-model="certForm.domain"
               type="text"
               placeholder="example.com"
@@ -1095,8 +1223,9 @@ onUnmounted(() => {
             />
           </div>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">备注名称</label>
+            <label for="cert-name" class="mb-1 block text-xs font-medium text-slate-700">备注名称</label>
             <input
+              id="cert-name"
               v-model="certForm.name"
               type="text"
               placeholder="默认与主域名相同"
@@ -1105,11 +1234,23 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div>
-          <label class="mb-1 block text-xs font-medium text-slate-700">
-            附加 SAN 列表（可选，逗号或换行分隔，例如泛域名 *.example.com）
-          </label>
+        <div class="space-y-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <label for="cert-sans" class="block text-xs font-medium text-slate-700">
+              附加 SAN 列表（可选，逗号或换行分隔）
+            </label>
+            <label class="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-indigo-700">
+              <input
+                v-model="includeWildcard"
+                type="checkbox"
+                class="rounded border-slate-300 text-indigo-600"
+                @change="syncWildcardInSANs(includeWildcard)"
+              />
+              同时包含泛域名 ({{ wildcardForDomain(certForm.domain) || '*.example.com' }})
+            </label>
+          </div>
           <textarea
+            id="cert-sans"
             v-model="certForm.sansText"
             rows="2"
             placeholder="*.example.com"
@@ -1119,8 +1260,9 @@ onUnmounted(() => {
 
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">CA 签发账户 *</label>
+            <label for="cert-ca" class="mb-1 block text-xs font-medium text-slate-700">CA 签发账户 *</label>
             <select
+              id="cert-ca"
               v-model.number="certForm.ca_account_id"
               class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
             >
@@ -1131,8 +1273,9 @@ onUnmounted(() => {
             </select>
           </div>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">DNS 解析凭据 *</label>
+            <label for="cert-dns" class="mb-1 block text-xs font-medium text-slate-700">DNS 解析凭据 *</label>
             <select
+              id="cert-dns"
               v-model.number="certForm.dns_credential_id"
               class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
             >
@@ -1151,44 +1294,76 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="grid gap-4 sm:grid-cols-3">
-          <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">密钥算法</label>
-            <select
-              v-model="certForm.key_type"
-              class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-            >
-              <option value="EC256">EC256 (推荐)</option>
-              <option value="EC384">EC384</option>
-              <option value="RSA2048">RSA2048</option>
-            </select>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">提前续期天数</label>
-            <input
-              v-model.number="certForm.renew_before_days"
-              type="number"
-              min="1"
-              max="89"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm tabular-nums focus:border-indigo-500 focus:outline-none"
-            />
-          </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">Zone 手动覆写（可选）</label>
-            <input
-              v-model="certForm.zone_override"
-              type="text"
-              placeholder="留空自动识别"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs focus:border-indigo-500 focus:outline-none"
-            />
-          </div>
-        </div>
-
         <label class="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
           <input v-model="certForm.auto_renew" type="checkbox" class="rounded border-slate-300 text-indigo-600" />
           开启每日定时自动续期（剩余有效期 ≤ {{ certForm.renew_before_days }} 天触发）
         </label>
-      </div>
+
+        <!-- Collapsible Advanced Settings -->
+        <div class="rounded-xl border border-slate-200 bg-slate-50/60">
+          <button
+            type="button"
+            class="flex w-full items-center justify-between px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100/70"
+            @click="certAdvancedOpen = !certAdvancedOpen"
+          >
+            <span>高级设置（密钥算法 {{ certForm.key_type }} / 提前 {{ certForm.renew_before_days }} 天续期 / Zone 覆写）</span>
+            <ChevronUp v-if="certAdvancedOpen" class="h-4 w-4 text-slate-400" />
+            <ChevronDown v-else class="h-4 w-4 text-slate-400" />
+          </button>
+          <div v-if="certAdvancedOpen" class="space-y-3 border-t border-slate-200 p-4">
+            <div class="grid gap-4 sm:grid-cols-3">
+              <div>
+                <label for="cert-keytype" class="mb-1 block text-xs font-medium text-slate-700">密钥算法</label>
+                <select
+                  id="cert-keytype"
+                  v-model="certForm.key_type"
+                  class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                >
+                  <option value="EC256">EC256 (推荐)</option>
+                  <option value="EC384">EC384</option>
+                  <option value="RSA2048">RSA2048</option>
+                </select>
+              </div>
+              <div>
+                <label for="cert-renew-days" class="mb-1 block text-xs font-medium text-slate-700">提前续期天数</label>
+                <input
+                  id="cert-renew-days"
+                  v-model.number="certForm.renew_before_days"
+                  type="number"
+                  min="1"
+                  max="80"
+                  class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm tabular-nums focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label
+                  for="cert-zone-override"
+                  class="mb-1 block text-xs font-medium text-slate-700"
+                  title="仅当自动后缀匹配不到正确的托管根域名或使用 CNAME 委托验证时填写"
+                >
+                  Zone 手动覆写（可选）
+                </label>
+                <input
+                  id="cert-zone-override"
+                  v-model="certForm.zone_override"
+                  type="text"
+                  placeholder="留空自动识别"
+                  class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+            </div>
+            <div
+              v-if="certForm.renew_before_days > 60"
+              class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+            >
+              <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <span>
+                多数 ACME 证书有效期为 90 天，建议提前续期天数设为 15~30 天。当前设置为 {{ certForm.renew_before_days }} 天，可能导致高频续期并触发 CA 限流。
+              </span>
+            </div>
+          </div>
+        </div>
+      </form>
 
       <template #footer>
         <button
@@ -1199,26 +1374,36 @@ onUnmounted(() => {
           取消
         </button>
         <button
+          type="submit"
+          form="cert-modal-form"
+          :disabled="certSaving"
+          class="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+        >
+          {{ certSaving ? '保存中...' : '仅保存配置' }}
+        </button>
+        <button
+          v-if="!editingCert"
           type="button"
           :disabled="certSaving"
-          class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          @click="submitCert"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+          @click="submitCert(true)"
         >
-          {{ certSaving ? '保存中...' : '保存证书' }}
+          <Play class="h-3.5 w-3.5" />
+          {{ certSaving ? '处理中...' : '创建并立即签发' }}
         </button>
       </template>
     </ModalDialog>
 
-    <!-- Certificate Detail / Deployment Config Drawer -->
+    <!-- Certificate Detail / Jobs / Deployment Unified 3-Tab Drawer -->
     <DrawerPanel
       :open="drawerOpen"
-      :title="drawerMode === 'deployments' ? `部署配置 — ${selectedCert?.domain || ''}` : selectedCert?.domain || '证书详情'"
-      :subtitle="selectedCert ? (drawerMode === 'deployments' ? `${selectedCert.name} · 共 ${certDeployments.length} 个部署目标` : `${selectedCert.name} · ${selectedCert.key_type}`) : ''"
+      :title="selectedCert?.domain || '证书详情'"
+      :subtitle="selectedCert ? `${selectedCert.name} · ${selectedCert.key_type} · ${certDeployments.length} 个部署目标` : ''"
       width-class="max-w-3xl"
       @close="closeDrawer"
     >
       <template #headerExtra>
-        <div v-if="drawerMode === 'detail'" class="flex gap-6 pt-2">
+        <div class="flex gap-6 pt-2">
           <button
             type="button"
             class="border-b-2 pb-2.5 text-xs font-semibold transition"
@@ -1242,6 +1427,18 @@ onUnmounted(() => {
             @click="drawerTab = 'jobs'"
           >
             签发进度与日志
+          </button>
+          <button
+            type="button"
+            class="border-b-2 pb-2.5 text-xs font-semibold transition"
+            :class="
+              drawerTab === 'deployments'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            "
+            @click="drawerTab = 'deployments'"
+          >
+            部署目标 ({{ selectedCert?.deployment_total ?? certDeployments.length }})
           </button>
         </div>
       </template>
@@ -1272,6 +1469,13 @@ onUnmounted(() => {
                 :class="daysProgressColor(selectedCert)"
                 :style="{ width: `${daysProgressPercent(selectedCert)}%` }"
               />
+            </div>
+            <div
+              v-if="selectedCert.renew_before_days > 60"
+              class="mt-2.5 flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800"
+            >
+              <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+              <span>当前提前续期阈值为 {{ selectedCert.renew_before_days }} 天（接近 90 天完整有效期），建议调低至 15~30 天以免触发频繁续期。</span>
             </div>
           </div>
 
@@ -1328,6 +1532,7 @@ onUnmounted(() => {
                 <button
                   v-if="selectedCert.fingerprint_sha256"
                   type="button"
+                  aria-label="复制叶证书指纹"
                   class="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                   @click="copyToClipboard(selectedCert.fingerprint_sha256).then((ok) => showToast(ok ? 'success' : 'error', ok ? '已复制指纹' : '复制失败'))"
                 >
@@ -1527,6 +1732,15 @@ onUnmounted(() => {
 
                 <div class="flex flex-wrap items-center gap-1.5">
                   <button
+                    v-if="d.tls_verify_enabled && d.last_status === 'success' && !d.last_cert_fingerprint"
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100"
+                    @click="router.push({ path: '/hosts', query: { hostId: String(d.host_id), tab: 'caddy' } })"
+                  >
+                    <FileCode2 class="h-3 w-3" />
+                    去配置 Caddyfile
+                  </button>
+                  <button
                     type="button"
                     :disabled="pushingDeployId === d.id"
                     class="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
@@ -1545,6 +1759,7 @@ onUnmounted(() => {
                   </button>
                   <button
                     type="button"
+                    aria-label="编辑部署目标"
                     class="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-50"
                     @click="openEditDeployment(d)"
                   >
@@ -1552,6 +1767,7 @@ onUnmounted(() => {
                   </button>
                   <button
                     type="button"
+                    aria-label="删除部署目标"
                     class="rounded-lg border border-rose-200 p-1.5 text-rose-500 hover:bg-rose-50"
                     @click="requestDeleteDeployment(d)"
                   >
@@ -1588,11 +1804,12 @@ onUnmounted(() => {
       max-width="2xl"
       @close="deployModalOpen = false"
     >
-      <div class="space-y-4">
+      <form id="deploy-modal-form" class="space-y-4" @submit.prevent="submitDeployment">
         <div class="grid gap-4 sm:grid-cols-3">
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">目标主机 *</label>
+            <label for="dep-host" class="mb-1 block text-xs font-medium text-slate-700">目标主机 *</label>
             <select
+              id="dep-host"
               v-model.number="deployForm.host_id"
               :disabled="!!editingDeploy"
               class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100"
@@ -1604,20 +1821,22 @@ onUnmounted(() => {
             </select>
           </div>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">部署模板</label>
+            <label for="dep-template" class="mb-1 block text-xs font-medium text-slate-700">部署模板</label>
             <select
+              id="dep-template"
               v-model="deployForm.template"
               class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
               @change="onTemplateChange"
             >
               <option value="caddy_docker">Caddy (Docker)</option>
-              <option value="local_dir">本机目录输出</option>
-              <option value="custom_ssh">自定义 SSH</option>
+              <option value="local_dir">仅输出证书文件</option>
+              <option value="custom_ssh">自定义 SSH 命令</option>
             </select>
           </div>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">目标名称 *</label>
+            <label for="dep-name" class="mb-1 block text-xs font-medium text-slate-700">目标名称 *</label>
             <input
+              id="dep-name"
               v-model="deployForm.name"
               type="text"
               class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
@@ -1625,110 +1844,148 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
-          <div class="text-xs font-semibold text-slate-700">证书写入路径与权限</div>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">Fullchain 路径 *</label>
-              <input v-model="deployForm.fullchain_path" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
-            </div>
-            <div>
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">Privkey 路径 *</label>
-              <input v-model="deployForm.privkey_path" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
-            </div>
-            <div>
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">Issuer 路径（可选）</label>
-              <input v-model="deployForm.issuer_path" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-              <div>
-                <label class="mb-1 block text-[11px] font-medium text-slate-600">证书权限</label>
-                <input v-model="deployForm.cert_file_mode" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
-              </div>
-              <div>
-                <label class="mb-1 block text-[11px] font-medium text-slate-600">私钥权限</label>
-                <input v-model="deployForm.key_file_mode" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
-              </div>
-            </div>
+        <!-- Container TLS Snippet Preview -->
+        <div v-if="deployPreviewTlsSnippet" class="rounded-xl border border-indigo-100 bg-indigo-50/60 p-3.5 text-xs">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-semibold text-indigo-950">对应 Caddyfile tls 配置片段（容器内路径）</span>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-[11px] font-semibold text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-50"
+              @click="copyToClipboard(deployPreviewTlsSnippet).then((ok) => showToast(ok ? 'success' : 'error', ok ? '已复制 tls 配置片段' : '复制失败'))"
+            >
+              <Copy class="h-3 w-3" />
+              复制片段
+            </button>
           </div>
-        </div>
-
-        <div class="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
-          <div class="text-xs font-semibold text-slate-700">服务重载配置</div>
-          <div class="grid gap-3 sm:grid-cols-3">
-            <div>
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">重载模式</label>
-              <select v-model="deployForm.reload_mode" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs">
-                <option value="docker_exec">docker_exec (Caddy --force)</option>
-                <option value="caddy_admin_api">caddy_admin_api</option>
-                <option value="webhook">webhook</option>
-                <option value="custom_cmd">custom_cmd</option>
-                <option value="none">none (仅写文件)</option>
-              </select>
-            </div>
-            <div v-if="deployForm.reload_mode === 'webhook'" class="sm:col-span-2">
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">Reload Webhook URL</label>
-              <input
-                v-model="deployForm.reload_webhook_url"
-                type="url"
-                placeholder="https://example.com/hooks/reload"
-                class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
-              />
-            </div>
-            <div v-else-if="deployForm.reload_mode === 'caddy_admin_api'" class="sm:col-span-2">
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">Caddy Admin API 地址</label>
-              <input
-                v-model="deployForm.reload_webhook_url"
-                type="url"
-                placeholder="留空默认 http://127.0.0.1:2019/load"
-                class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
-              />
-            </div>
-            <div v-else-if="deployForm.reload_mode !== 'none'" class="sm:col-span-2">
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">重载命令</label>
-              <input
-                v-model="deployForm.reload_command"
-                type="text"
-                class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
-              />
-            </div>
-          </div>
-        </div>
-
-        <div class="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-semibold text-slate-700">推送后 TLS 生效校验</span>
-            <label class="flex cursor-pointer items-center gap-1.5 text-xs text-slate-700">
-              <input v-model="deployForm.tls_verify_enabled" type="checkbox" class="rounded text-indigo-600" />
-              开启指纹比对校验
-            </label>
-          </div>
-          <div v-if="deployForm.tls_verify_enabled" class="grid gap-3 sm:grid-cols-3">
-            <div>
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">校验主机 / IP</label>
-              <input
-                v-model="deployForm.tls_verify_host"
-                type="text"
-                :placeholder="hosts.find((h) => h.id === deployForm.host_id)?.is_local ? '留空默认连 TLS SNI 域名（或填本机 IP）' : '留空自动使用主机 IP'"
-                class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">端口</label>
-              <input v-model.number="deployForm.tls_verify_port" type="number" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
-            </div>
-            <div>
-              <label class="mb-1 block text-[11px] font-medium text-slate-600">TLS SNI</label>
-              <input v-model="deployForm.tls_verify_sni" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
-            </div>
+          <div class="mt-1.5 rounded bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-700 break-all ring-1 ring-indigo-100">
+            {{ deployPreviewTlsSnippet }}
           </div>
         </div>
 
         <label class="flex cursor-pointer items-center gap-2 text-xs text-slate-700">
           <input v-model="deployForm.enabled" type="checkbox" class="rounded text-indigo-600" />
-          启用该部署目标（自动续期成功后扇出推送）
+          启用该部署目标（自动续期成功后并发推送）
         </label>
-      </div>
+
+        <!-- Collapsible Advanced Deployment Options -->
+        <div class="rounded-xl border border-slate-200 bg-white">
+          <button
+            type="button"
+            class="flex w-full items-center justify-between px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            @click="deployAdvancedOpen = !deployAdvancedOpen"
+          >
+            <span>高级配置（写入路径 / 文件权限 / 重载命令 / TLS 校验）</span>
+            <ChevronUp v-if="deployAdvancedOpen" class="h-4 w-4 text-slate-400" />
+            <ChevronDown v-else class="h-4 w-4 text-slate-400" />
+          </button>
+
+          <div v-if="deployAdvancedOpen" class="space-y-4 border-t border-slate-100 p-4">
+            <div class="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+              <div class="text-xs font-semibold text-slate-700">证书写入路径与权限</div>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label class="mb-1 block text-[11px] font-medium text-slate-600">Fullchain 路径 *</label>
+                  <input v-model="deployForm.fullchain_path" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+                </div>
+                <div>
+                  <label class="mb-1 block text-[11px] font-medium text-slate-600">Privkey 路径 *</label>
+                  <input v-model="deployForm.privkey_path" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+                </div>
+                <div>
+                  <label class="mb-1 block text-[11px] font-medium text-slate-600">Issuer 路径（可选）</label>
+                  <input v-model="deployForm.issuer_path" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="mb-1 block text-[11px] font-medium text-slate-600">证书权限</label>
+                    <input v-model="deployForm.cert_file_mode" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] font-medium text-slate-600">私钥权限</label>
+                    <input v-model="deployForm.key_file_mode" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+              <div class="text-xs font-semibold text-slate-700">服务重载配置</div>
+              <div class="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label class="mb-1 block text-[11px] font-medium text-slate-600">重载模式</label>
+                  <select v-model="deployForm.reload_mode" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs">
+                    <option value="docker_exec">容器内热重载 (docker exec)</option>
+                    <option value="caddy_admin_api">Caddy Admin API</option>
+                    <option value="webhook">Webhook 回调</option>
+                    <option value="custom_cmd">自定义 Shell 命令</option>
+                    <option value="none">仅写文件不重载</option>
+                  </select>
+                </div>
+                <div v-if="deployForm.reload_mode === 'webhook'" class="sm:col-span-2">
+                  <label class="mb-1 block text-[11px] font-medium text-slate-600">Reload Webhook URL</label>
+                  <input
+                    v-model="deployForm.reload_webhook_url"
+                    type="url"
+                    placeholder="https://example.com/hooks/reload"
+                    class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
+                  />
+                </div>
+                <div v-else-if="deployForm.reload_mode === 'caddy_admin_api'" class="sm:col-span-2">
+                  <label class="mb-1 block text-[11px] font-medium text-slate-600">Caddy Admin API 地址</label>
+                  <input
+                    v-model="deployForm.reload_webhook_url"
+                    type="url"
+                    placeholder="留空默认 http://127.0.0.1:2019/load"
+                    class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
+                  />
+                </div>
+                <div v-else-if="deployForm.reload_mode !== 'none'" class="sm:col-span-2">
+                  <label class="mb-1 block text-[11px] font-medium text-slate-600">重载命令</label>
+                  <input
+                    v-model="deployForm.reload_command"
+                    type="text"
+                    class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div class="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-700">推送后 TLS 生效校验</span>
+                <label class="flex cursor-pointer items-center gap-1.5 text-xs text-slate-700">
+                  <input v-model="deployForm.tls_verify_enabled" type="checkbox" class="rounded text-indigo-600" />
+                  开启指纹比对校验
+                </label>
+              </div>
+              <div v-if="deployForm.tls_verify_enabled" class="space-y-2">
+                <div class="grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <label class="mb-1 block text-[11px] font-medium text-slate-600">校验主机 / IP</label>
+                    <input
+                      v-model="deployForm.tls_verify_host"
+                      type="text"
+                      :placeholder="hosts.find((h) => h.id === deployForm.host_id)?.is_local ? '留空默认连 TLS SNI 域名（或填本机 IP）' : '留空自动使用主机 IP'"
+                      class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] font-medium text-slate-600">端口</label>
+                    <input v-model.number="deployForm.tls_verify_port" type="number" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] font-medium text-slate-600">TLS SNI</label>
+                    <input v-model="deployForm.tls_verify_sni" type="text" class="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs" />
+                  </div>
+                </div>
+                <p class="text-[11px] text-slate-500">
+                  提示：如果目标站点前方接入了 Cloudflare 等 CDN 代理，建议填写源站真实 IP 作为校验主机，避免校验证书时连到 CDN 边缘节点证书。
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
 
       <template #footer>
         <button
@@ -1739,10 +1996,10 @@ onUnmounted(() => {
           取消
         </button>
         <button
-          type="button"
+          type="submit"
+          form="deploy-modal-form"
           :disabled="deploySaving"
           class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          @click="submitDeployment"
         >
           {{ deploySaving ? '保存中...' : '保存部署目标' }}
         </button>
@@ -1780,9 +2037,15 @@ onUnmounted(() => {
               </span>
               <span
                 class="rounded px-2 py-0.5 font-medium"
-                :class="log.tls_verified ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'"
+                :class="
+                  !logsTargetTlsEnabled
+                    ? 'bg-slate-200 text-slate-600'
+                    : log.tls_verified
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-amber-100 text-amber-800'
+                "
               >
-                TLS 校验: {{ log.tls_verified ? '通过' : '未通过/未开启' }}
+                TLS 校验: {{ !logsTargetTlsEnabled ? '未开启' : log.tls_verified ? '已通过' : '未通过' }}
               </span>
             </div>
             <span class="font-mono text-[11px] text-slate-500 tabular-nums">
@@ -1795,7 +2058,7 @@ onUnmounted(() => {
           </div>
           <div
             v-if="log.error_message"
-            class="mt-2 rounded px-2.5 py-1.5"
+            class="mt-2 rounded px-2.5 py-1.5 break-words"
             :class="log.status === 'success' ? 'bg-amber-50 text-amber-800' : 'bg-rose-50 text-rose-700'"
           >
             {{ log.error_message }}
@@ -1804,9 +2067,12 @@ onUnmounted(() => {
             <div class="mb-1 text-[11px] font-semibold text-slate-500">STDOUT</div>
             <pre class="custom-scrollbar max-h-36 overflow-auto rounded bg-slate-900 p-2.5 font-mono text-[11px] text-emerald-300 whitespace-pre-wrap">{{ log.stdout }}</pre>
           </div>
-          <div v-if="log.stderr" class="mt-2">
+          <div v-if="log.stderr && log.stderr.trim() !== (log.error_message || '').trim()" class="mt-2">
             <div class="mb-1 text-[11px] font-semibold text-slate-500">STDERR</div>
-            <pre class="custom-scrollbar max-h-36 overflow-auto rounded bg-slate-900 p-2.5 font-mono text-[11px] text-rose-300 whitespace-pre-wrap">{{ log.stderr }}</pre>
+            <pre
+              class="custom-scrollbar max-h-36 overflow-auto rounded bg-slate-900 p-2.5 font-mono text-[11px] whitespace-pre-wrap"
+              :class="log.status === 'success' ? 'text-slate-300' : 'text-rose-300'"
+            >{{ log.stderr }}</pre>
           </div>
         </div>
       </div>

@@ -50,6 +50,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 	r.Use(Recoverer(deps.Redactor, deps.Logger))
 	r.Use(RequestLogger(deps.Redactor, deps.Logger))
+	r.Use(GzipMiddleware())
 	if deps.Maint != nil {
 		r.Use(deps.Maint.Middleware())
 	}
@@ -65,6 +66,9 @@ func NewRouter(deps RouterDeps) http.Handler {
 	caddyHandler := NewCaddyHandler(deps.CaddyManager)
 	webhookHandler := NewWebhookHandler(deps.DB, deps.Cipher, deps.Redactor, deps.Notifier)
 	settingsHandler := NewSettingsHandler(deps.DB, deps.Scheduler, deps.PruneTrigger)
+	if deps.Config != nil {
+		settingsHandler.SetTimezone(deps.Config.Location().String())
+	}
 	backupHandler := NewBackupHandler(deps.BackupSvc, deps.Config)
 
 	trustProxy := deps.Config != nil && deps.Config.TrustProxy
@@ -102,6 +106,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 			pr.Route("/dns-credentials", func(dr chi.Router) {
 				dr.Get("/", dnsHandler.List)
 				dr.Post("/", dnsHandler.Create)
+				dr.Post("/test", dnsHandler.TestAdhoc)
 				dr.Put("/{id}", dnsHandler.Update)
 				dr.Delete("/{id}", dnsHandler.Delete)
 				dr.Post("/{id}/test", dnsHandler.Test)
@@ -132,10 +137,12 @@ func NewRouter(deps RouterDeps) http.Handler {
 			pr.Route("/hosts", func(hr chi.Router) {
 				hr.Get("/", hostHandler.ListHosts)
 				hr.Post("/", hostHandler.CreateHost)
+				hr.Post("/probe", hostHandler.ProbeHost)
 				hr.Get("/{id}", hostHandler.GetHost)
 				hr.Put("/{id}", hostHandler.UpdateHost)
 				hr.Delete("/{id}", hostHandler.DeleteHost)
 				hr.Post("/{id}/test", hostHandler.TestHost)
+				hr.Post("/{id}/discover-caddy", hostHandler.DiscoverCaddy)
 				hr.Post("/{id}/reset-host-key", hostHandler.ResetHostKey)
 				hr.Get("/{id}/deployments", hostHandler.ListHostDeployments)
 
@@ -221,6 +228,16 @@ func newSPAHandler(webFS fs.FS) http.Handler {
 		}
 
 		clean := strings.TrimPrefix(pathpkg.Clean("/"+r.URL.Path), "/")
+		if clean == "favicon.ico" {
+			if info, err := fs.Stat(webFS, "favicon.svg"); err == nil && !info.IsDir() {
+				w.Header().Set("Content-Type", "image/svg+xml")
+				w.Header().Set("Cache-Control", "public, max-age=86400")
+				http.ServeFileFS(w, r, webFS, "favicon.svg")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if clean != "" && clean != "." && clean != "index.html" {
 			if info, err := fs.Stat(webFS, clean); err == nil && !info.IsDir() {
 				if strings.HasPrefix(clean, "assets/") {

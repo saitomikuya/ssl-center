@@ -16,6 +16,7 @@ type SettingsHandler struct {
 	db           *db.DB
 	reloader     model.ScheduleReloader
 	pruneTrigger model.LogPruneTrigger
+	timezone     string
 }
 
 // NewSettingsHandler constructs a SettingsHandler.
@@ -24,6 +25,14 @@ func NewSettingsHandler(database *db.DB, reloader model.ScheduleReloader, pruneT
 		db:           database,
 		reloader:     reloader,
 		pruneTrigger: pruneTrigger,
+		timezone:     time.Local.String(),
+	}
+}
+
+// SetTimezone sets the displayed scheduler timezone name on SettingsDTO responses.
+func (h *SettingsHandler) SetTimezone(tz string) {
+	if trimmed := strings.TrimSpace(tz); trimmed != "" {
+		h.timezone = trimmed
 	}
 }
 
@@ -34,6 +43,7 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		MapDBError(w, err)
 		return
 	}
+	dto.Timezone = h.timezone
 	OK(w, dto)
 }
 
@@ -90,6 +100,7 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		MapDBError(w, err)
 		return
 	}
+	updated.Timezone = h.timezone
 
 	if h.reloader != nil && req.InspectTime != nil && *req.InspectTime != oldSettings.InspectTime {
 		_ = h.reloader.ReloadSchedule(r.Context())

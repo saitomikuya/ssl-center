@@ -4,6 +4,7 @@ import type {
   DNSCredentialDTO,
   DNSTestResponse,
   DNSZonesResponse,
+  TestDNSAdhocRequest,
   UpdateDNSRequest,
 } from '@/types/api'
 
@@ -34,6 +35,13 @@ export function deleteDNSCredential(id: number) {
 export function testDNSCredential(id: number) {
   return apiRequest<DNSTestResponse>(`/dns-credentials/${id}/test`, {
     method: 'POST',
+  })
+}
+
+export function testDNSAdhoc(req: TestDNSAdhocRequest) {
+  return apiRequest<DNSTestResponse>('/dns-credentials/test', {
+    method: 'POST',
+    body: req,
   })
 }
 

@@ -1,13 +1,16 @@
 package api
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -248,5 +251,119 @@ func isMutatingMethod(method string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+var gzipWriterPool = sync.Pool{
+	New: func() any {
+		return gzip.NewWriter(io.Discard)
+	},
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz          *gzip.Writer
+	wroteHeader bool
+	passthrough bool
+}
+
+func (g *gzipResponseWriter) shouldBypass(status int) bool {
+	if status < 200 || status == http.StatusNoContent || status == http.StatusNotModified || status == http.StatusPartialContent {
+		return true
+	}
+	h := g.ResponseWriter.Header()
+	if h.Get("Content-Encoding") != "" || h.Get("Content-Range") != "" {
+		return true
+	}
+	ct := strings.ToLower(h.Get("Content-Type"))
+	switch {
+	case strings.Contains(ct, "text/event-stream"),
+		strings.Contains(ct, "application/zip"),
+		strings.Contains(ct, "application/gzip"),
+		strings.Contains(ct, "application/x-gzip"),
+		strings.HasPrefix(ct, "image/") && !strings.Contains(ct, "image/svg+xml"):
+		return true
+	}
+	return false
+}
+
+func (g *gzipResponseWriter) initCompression(status int) {
+	if g.wroteHeader {
+		return
+	}
+	g.wroteHeader = true
+	if g.shouldBypass(status) {
+		g.passthrough = true
+		return
+	}
+	h := g.ResponseWriter.Header()
+	h.Del("Content-Length")
+	h.Set("Content-Encoding", "gzip")
+	h.Add("Vary", "Accept-Encoding")
+	gz := gzipWriterPool.Get().(*gzip.Writer)
+	gz.Reset(g.ResponseWriter)
+	g.gz = gz
+}
+
+func (g *gzipResponseWriter) WriteHeader(code int) {
+	if g.wroteHeader {
+		return
+	}
+	g.initCompression(code)
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *gzipResponseWriter) Write(p []byte) (int, error) {
+	if !g.wroteHeader {
+		if g.ResponseWriter.Header().Get("Content-Type") == "" {
+			g.ResponseWriter.Header().Set("Content-Type", http.DetectContentType(p))
+		}
+		g.WriteHeader(http.StatusOK)
+	}
+	if g.passthrough || g.gz == nil {
+		return g.ResponseWriter.Write(p)
+	}
+	return g.gz.Write(p)
+}
+
+func (g *gzipResponseWriter) Flush() {
+	if g.gz != nil {
+		_ = g.gz.Flush()
+	}
+	if flusher, ok := g.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (g *gzipResponseWriter) Unwrap() http.ResponseWriter {
+	return g.ResponseWriter
+}
+
+func (g *gzipResponseWriter) close() {
+	if g.gz != nil {
+		_ = g.gz.Close()
+		g.gz.Reset(io.Discard)
+		gzipWriterPool.Put(g.gz)
+		g.gz = nil
+	}
+}
+
+// GzipMiddleware compresses JSON and text/JS/CSS responses when the client accepts gzip,
+// while bypassing SSE streams, binary downloads, and already-encoded payloads.
+func GzipMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodHead ||
+				!strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip") ||
+				strings.HasSuffix(r.URL.Path, "/stream") ||
+				strings.HasSuffix(r.URL.Path, "/bundle.zip") ||
+				r.URL.Path == "/api/v1/backup/export" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			grw := &gzipResponseWriter{ResponseWriter: w}
+			defer grw.close()
+			next.ServeHTTP(grw, r)
+		})
 	}
 }

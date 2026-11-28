@@ -146,7 +146,17 @@ type DNSService struct {
 	cfBaseURL     string
 	huaweiBaseURL string
 	huaweiLocks   *zoneLockRegistry
+
+	zoneCacheMu sync.RWMutex
+	zoneCache   map[int64]dnsZoneCacheEntry
 }
+
+type dnsZoneCacheEntry struct {
+	zones     []model.DNSZone
+	expiresAt time.Time
+}
+
+const defaultDNSZoneCacheTTL = 60 * time.Second
 
 // NewDNSService constructs a DNSService.
 func NewDNSService(database *db.DB, cipher *appcrypto.Cipher, redactor *appcrypto.SecretRedactor, opts ...DNSServiceOption) *DNSService {
@@ -159,6 +169,7 @@ func NewDNSService(database *db.DB, cipher *appcrypto.Cipher, redactor *appcrypt
 		},
 		cfBaseURL:   defaultCloudflareBaseURL,
 		huaweiLocks: newZoneLockRegistry(),
+		zoneCache:   make(map[int64]dnsZoneCacheEntry),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -357,6 +368,7 @@ func (s *DNSService) UpdateCredential(ctx context.Context, id int64, req model.U
 		}
 	}
 
+	s.invalidateZoneCache(cred.ID)
 	s.recordAudit(ctx, "dns.updated", model.AuditLevelInfo, cred.ID, cred.Name, fmt.Sprintf("Updated DNS credential %s", cred.Name), actorIP)
 	dto := s.toDTO(cred, region)
 	return &dto, nil
@@ -372,6 +384,7 @@ func (s *DNSService) DeleteCredential(ctx context.Context, id int64, actorIP str
 	if err := s.db.DeleteDNSCredential(ctx, id); err != nil {
 		return err
 	}
+	s.invalidateZoneCache(id)
 	if s.redactor != nil && len(secrets) > 0 {
 		s.redactor.Remove(secrets...)
 	}
@@ -404,6 +417,7 @@ func (s *DNSService) TestCredential(ctx context.Context, id int64) (*model.DNSTe
 	if zones == nil {
 		zones = make([]model.DNSZone, 0)
 	}
+	s.setCachedZones(id, zones)
 	msg := fmt.Sprintf("Connected successfully; %d zone(s) visible", len(zones))
 	_ = s.db.UpdateDNSTestResult(ctx, id, true, msg, now)
 	return &model.DNSTestResponse{
@@ -413,18 +427,138 @@ func (s *DNSService) TestCredential(ctx context.Context, id int64) (*model.DNSTe
 	}, nil
 }
 
-// ListZonesForDomain fetches visible zones for a credential and performs longest-suffix matching if domain != "".
-func (s *DNSService) ListZonesForDomain(ctx context.Context, id int64, domain string) (*model.DNSZonesResponse, error) {
-	provider, err := s.BuildProvider(ctx, id, "")
-	if err != nil {
-		return nil, err
+// TestAdhoc verifies DNS provider connectivity before saving (or during editing with fallback secrets).
+func (s *DNSService) TestAdhoc(ctx context.Context, req model.TestDNSAdhocRequest) (*model.DNSTestResponse, error) {
+	providerName := strings.ToLower(strings.TrimSpace(req.Provider))
+	if providerName == "" && req.CredentialID > 0 {
+		cred, err := s.db.GetDNSCredential(ctx, req.CredentialID)
+		if err != nil {
+			return nil, err
+		}
+		providerName = cred.Provider
 	}
+
+	var (
+		provider DNSProvider
+		secrets  []string
+	)
+
+	switch providerName {
+	case model.DNSProviderCloudflare:
+		tok := strings.TrimSpace(req.APIToken)
+		if tok == "" && req.CredentialID > 0 {
+			cred, err := s.db.GetDNSCredential(ctx, req.CredentialID)
+			if err != nil {
+				return nil, err
+			}
+			if cred.Provider != model.DNSProviderCloudflare {
+				return nil, fmt.Errorf("%w: credential provider mismatch", ErrInvalidDNSInput)
+			}
+			plain, err := s.cipher.Decrypt(cred.ConfigEnc, aadDNSConfigEnc)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt existing DNS config: %w", err)
+			}
+			var existing model.CloudflareCredConfig
+			if err := json.Unmarshal([]byte(plain), &existing); err != nil {
+				return nil, fmt.Errorf("parse existing cloudflare config: %w", err)
+			}
+			tok = existing.APIToken
+		}
+		if tok == "" {
+			return nil, fmt.Errorf("%w: api_token is required for cloudflare", ErrInvalidDNSInput)
+		}
+		secrets = []string{tok}
+		provider = NewCloudflareProvider(tok, s.cfBaseURL, s.httpClient)
+
+	case model.DNSProviderHuaweiCloud:
+		ak := strings.TrimSpace(req.AccessKey)
+		sk := strings.TrimSpace(req.SecretKey)
+		region := strings.TrimSpace(req.Region)
+		if (ak == "" || sk == "" || region == "") && req.CredentialID > 0 {
+			cred, err := s.db.GetDNSCredential(ctx, req.CredentialID)
+			if err != nil {
+				return nil, err
+			}
+			if cred.Provider != model.DNSProviderHuaweiCloud {
+				return nil, fmt.Errorf("%w: credential provider mismatch", ErrInvalidDNSInput)
+			}
+			plain, err := s.cipher.Decrypt(cred.ConfigEnc, aadDNSConfigEnc)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt existing DNS config: %w", err)
+			}
+			var existing model.HuaweiCredConfig
+			if err := json.Unmarshal([]byte(plain), &existing); err != nil {
+				return nil, fmt.Errorf("parse existing huaweicloud config: %w", err)
+			}
+			if ak == "" {
+				ak = existing.AccessKey
+			}
+			if sk == "" {
+				sk = existing.SecretKey
+			}
+			if region == "" {
+				region = existing.Region
+			}
+		}
+		if ak == "" || sk == "" {
+			return nil, fmt.Errorf("%w: access_key and secret_key are required for huaweicloud", ErrInvalidDNSInput)
+		}
+		region = normalizeHuaweiRegion(region)
+		baseURL := s.huaweiBaseURL
+		if baseURL == "" {
+			baseURL = fmt.Sprintf("https://dns.%s.myhuaweicloud.com", region)
+		}
+		secrets = []string{ak, sk}
+		provider = NewHuaweiCloudProvider(ak, sk, region, baseURL, s.httpClient, s.huaweiLocks)
+
+	default:
+		return nil, fmt.Errorf("%w: unsupported DNS provider %q", ErrInvalidDNSInput, req.Provider)
+	}
+
+	if s.redactor != nil && len(secrets) > 0 {
+		s.redactor.Add(secrets...)
+		defer s.redactor.Remove(secrets...)
+	}
+
 	zones, err := provider.ListZones(ctx)
 	if err != nil {
-		return nil, err
+		msg := err.Error()
+		if s.redactor != nil {
+			msg = s.redactor.Redact(msg)
+		}
+		return &model.DNSTestResponse{
+			OK:      false,
+			Message: msg,
+			Zones:   make([]model.DNSZone, 0),
+		}, nil
 	}
 	if zones == nil {
 		zones = make([]model.DNSZone, 0)
+	}
+	return &model.DNSTestResponse{
+		OK:      true,
+		Message: fmt.Sprintf("Connected successfully; %d zone(s) visible", len(zones)),
+		Zones:   zones,
+	}, nil
+}
+
+// ListZonesForDomain fetches visible zones for a credential and performs longest-suffix matching if domain != "".
+func (s *DNSService) ListZonesForDomain(ctx context.Context, id int64, domain string) (*model.DNSZonesResponse, error) {
+	zones, ok := s.getCachedZones(id)
+	if !ok {
+		provider, err := s.BuildProvider(ctx, id, "")
+		if err != nil {
+			return nil, err
+		}
+		fetched, err := provider.ListZones(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if fetched == nil {
+			fetched = make([]model.DNSZone, 0)
+		}
+		zones = fetched
+		s.setCachedZones(id, zones)
 	}
 
 	var matched string
@@ -437,6 +571,44 @@ func (s *DNSService) ListZonesForDomain(ctx context.Context, id int64, domain st
 		Zones:       zones,
 		MatchedZone: matched,
 	}, nil
+}
+
+func (s *DNSService) getCachedZones(id int64) ([]model.DNSZone, bool) {
+	if s.zoneCache == nil {
+		return nil, false
+	}
+	s.zoneCacheMu.RLock()
+	entry, ok := s.zoneCache[id]
+	s.zoneCacheMu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	out := make([]model.DNSZone, len(entry.zones))
+	copy(out, entry.zones)
+	return out, true
+}
+
+func (s *DNSService) setCachedZones(id int64, zones []model.DNSZone) {
+	if s.zoneCache == nil {
+		return
+	}
+	copied := make([]model.DNSZone, len(zones))
+	copy(copied, zones)
+	s.zoneCacheMu.Lock()
+	s.zoneCache[id] = dnsZoneCacheEntry{
+		zones:     copied,
+		expiresAt: time.Now().Add(defaultDNSZoneCacheTTL),
+	}
+	s.zoneCacheMu.Unlock()
+}
+
+func (s *DNSService) invalidateZoneCache(id int64) {
+	if s.zoneCache == nil {
+		return
+	}
+	s.zoneCacheMu.Lock()
+	delete(s.zoneCache, id)
+	s.zoneCacheMu.Unlock()
 }
 
 // BuildProvider instantiates a DNSProvider for the given credential ID and optional zone override.

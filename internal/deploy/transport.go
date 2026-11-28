@@ -55,6 +55,21 @@ func NewTransport(database *db.DB, cipher *crypto.Cipher, redactor *crypto.Secre
 }
 
 var _ model.RemoteTransport = (*Transport)(nil)
+var _ model.TransportSessionScoper = (*Transport)(nil)
+
+// WithSession executes fn while reusing a single SSH/SFTP connection for host.
+func (t *Transport) WithSession(ctx context.Context, host *model.Host, fn func(context.Context) error) error {
+	if fn == nil {
+		return nil
+	}
+	if host == nil {
+		return errors.New("host must not be nil")
+	}
+	if isLocalHost(host) {
+		return fn(ctx)
+	}
+	return t.withSSHSession(ctx, host, fn)
+}
 
 // TestConnection verifies connectivity and optional Docker/Caddy container status.
 func (t *Transport) TestConnection(ctx context.Context, host *model.Host) (*model.HostTestResult, error) {

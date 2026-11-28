@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -577,5 +578,85 @@ func TestNormalizeHuaweiRegion(t *testing.T) {
 		if got := normalizeHuaweiRegion(tc.in); got != tc.want {
 			t.Errorf("normalizeHuaweiRegion(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestDNSService_ZoneCache_And_TestAdhoc(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	var apiCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer adhoc-token-123" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":10000,"message":"bad token"}]}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result": []map[string]string{
+				{"id": "z1", "name": "example.com"},
+			},
+			"result_info": map[string]int{"page": 1, "per_page": 50, "total_pages": 1},
+		})
+	}))
+	defer srv.Close()
+
+	dnsSvc := NewDNSService(env.db, env.cipher, env.redactor,
+		WithDNSHTTPClient(srv.Client()),
+		WithCloudflareBaseURL(srv.URL),
+	)
+
+	// Ad-hoc test before saving
+	adhocOK, err := dnsSvc.TestAdhoc(ctx, model.TestDNSAdhocRequest{
+		Provider: model.DNSProviderCloudflare,
+		APIToken: "adhoc-token-123",
+	})
+	if err != nil || !adhocOK.OK || len(adhocOK.Zones) != 1 {
+		t.Fatalf("TestAdhoc expected ok, got %+v err=%v", adhocOK, err)
+	}
+
+	adhocBad, err := dnsSvc.TestAdhoc(ctx, model.TestDNSAdhocRequest{
+		Provider: model.DNSProviderCloudflare,
+		APIToken: "wrong-token",
+	})
+	if err != nil || adhocBad.OK {
+		t.Fatalf("TestAdhoc bad token expected ok=false, got %+v err=%v", adhocBad, err)
+	}
+
+	// Save credential and verify zone cache hits on repeated ListZonesForDomain calls
+	dto, err := dnsSvc.CreateCredential(ctx, model.CreateDNSRequest{
+		Name:     "Cached CF",
+		Provider: model.DNSProviderCloudflare,
+		APIToken: "adhoc-token-123",
+	}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before := apiCalls.Load()
+	if _, err := dnsSvc.ListZonesForDomain(ctx, dto.ID, "app.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dnsSvc.ListZonesForDomain(ctx, dto.ID, "api.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	after := apiCalls.Load()
+	if after-before != 1 {
+		t.Fatalf("expected 1 upstream call due to zone cache, got %d", after-before)
+	}
+
+	// UpdateCredential invalidates cache
+	newName := "Cached CF v2"
+	if _, err := dnsSvc.UpdateCredential(ctx, dto.ID, model.UpdateDNSRequest{Name: &newName}, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dnsSvc.ListZonesForDomain(ctx, dto.ID, "web.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if apiCalls.Load()-after != 1 {
+		t.Fatalf("expected cache invalidation on UpdateCredential")
 	}
 }

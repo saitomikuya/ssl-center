@@ -191,6 +191,16 @@ export interface DNSZonesResponse {
   matched_zone: string
 }
 
+export interface TestDNSAdhocRequest {
+  credential_id?: number
+  name?: string
+  provider: DNSProvider
+  api_token?: string
+  access_key?: string
+  secret_key?: string
+  region?: string
+}
+
 // ============================================================================
 // Certificates & Jobs
 // ============================================================================
@@ -375,6 +385,24 @@ export interface UpdateHostRequest {
   caddy_container_cert_dir?: string
 }
 
+export interface DetectedContainer {
+  name: string
+  image: string
+  state: string
+  status: string
+  running: boolean
+  is_caddy: boolean
+}
+
+export interface DetectedCaddyConfig {
+  container_name: string
+  host_caddyfile?: string
+  container_caddyfile?: string
+  host_cert_dir?: string
+  container_cert_dir?: string
+  mount_type?: string
+}
+
 export interface HostTestResult {
   ssh_ok: boolean
   docker_ok: boolean
@@ -383,6 +411,40 @@ export interface HostTestResult {
   host_key_status: string
   message: string
   caddy_version?: string
+  caddy_issue_code?: string
+  caddyfile_exists?: boolean
+  detected_containers?: DetectedContainer[]
+  detected_caddy_config?: DetectedCaddyConfig
+}
+
+export interface HostProbeRequest {
+  host_id?: number
+  name?: string
+  mode?: string
+  host?: string
+  port?: number
+  username?: string
+  auth_type?: 'key' | 'password'
+  ssh_private_key?: string
+  ssh_passphrase?: string
+  ssh_password?: string
+  host_key_policy?: HostKeyPolicy
+  caddy_enabled?: boolean
+  caddy_container?: string
+  caddy_host_caddyfile?: string
+  caddy_container_caddyfile?: string
+  caddy_host_cert_dir?: string
+  caddy_container_cert_dir?: string
+  target_container?: string
+}
+
+export interface DiscoverCaddyResponse {
+  docker_ok: boolean
+  caddy_issue_code?: string
+  caddyfile_exists?: boolean
+  detected_containers: DetectedContainer[]
+  detected_caddy_config?: DetectedCaddyConfig
+  message: string
 }
 
 export type DeployTemplate = 'caddy_docker' | 'local_dir' | 'custom_ssh'
@@ -613,6 +675,7 @@ export interface SettingsDTO {
   expiring_warn_days: number
   log_retention_days: number
   log_max_rows: number
+  timezone?: string
 }
 
 export interface UpdateSettingsRequest {

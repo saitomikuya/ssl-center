@@ -101,6 +101,24 @@ func (h *DNSHandler) Test(w http.ResponseWriter, r *http.Request) {
 	OK(w, resp)
 }
 
+// TestAdhoc handles POST /api/v1/dns-credentials/test for pre-save connectivity testing.
+func (h *DNSHandler) TestAdhoc(w http.ResponseWriter, r *http.Request) {
+	var req model.TestDNSAdhocRequest
+	if err := BindJSON(r, &req); err != nil {
+		Fail(w, http.StatusBadRequest, CodeBadRequest, "Invalid JSON request body", nil)
+		return
+	}
+	resp, err := h.dnsSvc.TestAdhoc(r.Context(), req)
+	if err != nil {
+		mapDNSError(w, err)
+		return
+	}
+	if resp.Zones == nil {
+		resp.Zones = make([]model.DNSZone, 0)
+	}
+	OK(w, resp)
+}
+
 // Zones handles GET /api/v1/dns-credentials/{id}/zones?domain=*.example.com.
 func (h *DNSHandler) Zones(w http.ResponseWriter, r *http.Request) {
 	id, err := URLParamInt64(r, "id")

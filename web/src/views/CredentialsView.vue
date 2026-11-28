@@ -3,11 +3,14 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Cloud,
   Copy,
   Download,
   Edit3,
   FlaskConical,
+  HelpCircle,
   KeyRound,
   Plus,
   RefreshCw,
@@ -28,6 +31,7 @@ import {
   deleteDNSCredential,
   listDNSCredentials,
   matchDNSZones,
+  testDNSAdhoc,
   testDNSCredential,
   updateDNSCredential,
 } from '@/api/dns'
@@ -254,6 +258,9 @@ const dnsLoading = ref(false)
 const dnsModalOpen = ref(false)
 const dnsEditing = ref<DNSCredentialDTO | null>(null)
 const dnsSubmitting = ref(false)
+const dnsGuideOpen = ref(false)
+const dnsInlineTesting = ref(false)
+const dnsInlineTestResult = ref<DNSTestResponse | null>(null)
 
 const HUAWEI_REGION_DOMESTIC = 'cn-north-4'
 const HUAWEI_REGION_INTERNATIONAL = 'ap-southeast-1'
@@ -320,6 +327,8 @@ async function loadDNS() {
 
 function openCreateDNS() {
   dnsEditing.value = null
+  dnsGuideOpen.value = false
+  dnsInlineTestResult.value = null
   huaweiEdition.value = 'domestic'
   Object.assign(dnsForm, {
     name: '',
@@ -334,6 +343,8 @@ function openCreateDNS() {
 
 function openEditDNS(item: DNSCredentialDTO) {
   dnsEditing.value = item
+  dnsGuideOpen.value = false
+  dnsInlineTestResult.value = null
   const region = (item.region || '').trim()
   if (!region || region === HUAWEI_REGION_DOMESTIC) {
     huaweiEdition.value = 'domestic'
@@ -351,6 +362,38 @@ function openEditDNS(item: DNSCredentialDTO) {
     region: region || HUAWEI_REGION_DOMESTIC,
   })
   dnsModalOpen.value = true
+}
+
+async function handleInlineTestDNS() {
+  const huaweiRegion = resolveHuaweiRegion()
+  if (!dnsEditing.value) {
+    if (dnsForm.provider === 'cloudflare' && !dnsForm.api_token.trim()) {
+      showToast('warning', '请先填写 Cloudflare API Token')
+      return
+    }
+    if (dnsForm.provider === 'huaweicloud' && (!dnsForm.access_key.trim() || !dnsForm.secret_key.trim())) {
+      showToast('warning', '请先填写华为云 AK 与 SK')
+      return
+    }
+  }
+  dnsInlineTesting.value = true
+  dnsInlineTestResult.value = null
+  try {
+    const res = await testDNSAdhoc({
+      credential_id: dnsEditing.value?.id,
+      provider: dnsForm.provider,
+      api_token: dnsForm.provider === 'cloudflare' ? dnsForm.api_token.trim() || undefined : undefined,
+      access_key: dnsForm.provider === 'huaweicloud' ? dnsForm.access_key.trim() || undefined : undefined,
+      secret_key: dnsForm.provider === 'huaweicloud' ? dnsForm.secret_key.trim() || undefined : undefined,
+      region: dnsForm.provider === 'huaweicloud' ? huaweiRegion : undefined,
+    })
+    dnsInlineTestResult.value = res
+    showToast(res.ok ? 'success' : 'error', res.ok ? `连通性测试通过（可见 ${res.zones.length} 个 Zone）` : `测试失败: ${res.message}`)
+  } catch (err) {
+    showToast('error', err instanceof Error ? err.message : '测试连接失败')
+  } finally {
+    dnsInlineTesting.value = false
+  }
 }
 
 async function submitDNS() {
@@ -814,15 +857,16 @@ onMounted(() => {
     <ModalDialog
       :open="caModalOpen"
       :title="caEditing ? '编辑 CA 账户' : '新建 CA 账户'"
-      subtitle="支持 Let's Encrypt 免 EAB 注册与 Google Trust Services EAB / acme.key 导入"
+      :subtitle="caEditing ? '可修改账户名称、联系邮箱及默认账户设置' : '支持 Let\'s Encrypt 免 EAB 注册与 Google Trust Services EAB / acme.key 导入'"
       max-width="lg"
       @close="caModalOpen = false"
     >
-      <div class="space-y-4">
+      <form id="ca-modal-form" class="space-y-4" @submit.prevent="submitCA">
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">账户名称 *</label>
+            <label for="ca-name" class="mb-1 block text-xs font-medium text-slate-700">账户名称 *</label>
             <input
+              id="ca-name"
               v-model="caForm.name"
               type="text"
               placeholder="例如：LE 主力生产账号"
@@ -830,8 +874,9 @@ onMounted(() => {
             />
           </div>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">联系邮箱 *</label>
+            <label for="ca-email" class="mb-1 block text-xs font-medium text-slate-700">联系邮箱 *</label>
             <input
+              id="ca-email"
               v-model="caForm.email"
               type="email"
               placeholder="ops@example.com"
@@ -943,7 +988,7 @@ onMounted(() => {
           <input v-model="caForm.is_default" type="checkbox" class="rounded border-slate-300 text-indigo-600" />
           设为默认 CA 账户
         </label>
-      </div>
+      </form>
 
       <template #footer>
         <button
@@ -954,10 +999,10 @@ onMounted(() => {
           取消
         </button>
         <button
-          type="button"
+          type="submit"
+          form="ca-modal-form"
           :disabled="caSubmitting"
           class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          @click="submitCA"
         >
           {{ caSubmitting ? '提交中...' : caEditing ? '保存修改' : '注册并保存' }}
         </button>
@@ -1011,14 +1056,15 @@ onMounted(() => {
     <ModalDialog
       :open="dnsModalOpen"
       :title="dnsEditing ? '编辑 DNS 凭据' : '新建 DNS 凭据'"
-      subtitle="同服务商可添加多个命名账号，编辑时密钥留空表示保持原值不变"
+      :subtitle="dnsEditing ? '编辑时密钥留空表示保持原加密值不变，保存前可先测试连通性' : '支持 Cloudflare 与华为云多账号配置，保存前可直接测试 API 连通性与可见域名'"
       max-width="lg"
       @close="dnsModalOpen = false"
     >
-      <div class="space-y-4">
+      <form id="dns-modal-form" class="space-y-4" @submit.prevent="submitDNS">
         <div>
-          <label class="mb-1 block text-xs font-medium text-slate-700">凭据名称 *</label>
+          <label for="dns-name" class="mb-1 block text-xs font-medium text-slate-700">凭据名称 *</label>
           <input
+            id="dns-name"
             v-model="dnsForm.name"
             type="text"
             placeholder="例如：主力 Cloudflare / 备用华为云"
@@ -1027,8 +1073,9 @@ onMounted(() => {
         </div>
 
         <div v-if="!dnsEditing">
-          <label class="mb-1 block text-xs font-medium text-slate-700">DNS 服务商</label>
+          <label for="dns-provider" class="mb-1 block text-xs font-medium text-slate-700">DNS 服务商</label>
           <select
+            id="dns-provider"
             v-model="dnsForm.provider"
             class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
           >
@@ -1037,11 +1084,44 @@ onMounted(() => {
           </select>
         </div>
 
+        <!-- Inline Provider Guide -->
+        <div class="rounded-lg border border-slate-200 bg-slate-50">
+          <button
+            type="button"
+            class="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100/80"
+            @click="dnsGuideOpen = !dnsGuideOpen"
+          >
+            <span class="inline-flex items-center gap-1.5">
+              <HelpCircle class="h-3.5 w-3.5 text-indigo-600" />
+              {{ dnsForm.provider === 'cloudflare' ? '如何获取 Cloudflare API Token？' : '如何获取华为云 DNS AK/SK？' }}
+            </span>
+            <ChevronUp v-if="dnsGuideOpen" class="h-3.5 w-3.5 text-slate-400" />
+            <ChevronDown v-else class="h-3.5 w-3.5 text-slate-400" />
+          </button>
+          <div v-if="dnsGuideOpen" class="border-t border-slate-200 px-3 py-2.5 text-xs leading-relaxed text-slate-600">
+            <template v-if="dnsForm.provider === 'cloudflare'">
+              <ol class="list-decimal space-y-1 pl-4">
+                <li>登录 Cloudflare 控制台 → 右上角头像「My Profile / 我的个人资料」→「API Tokens」。</li>
+                <li>点击「Create Token」→ 使用「Edit zone DNS」模板，确认权限包含 <code class="font-mono">Zone:Read</code> 与 <code class="font-mono">DNS:Edit</code>。</li>
+                <li>Zone Resources 选择需要签发证书的域名（或 All zones），生成后粘贴下方即可。</li>
+              </ol>
+            </template>
+            <template v-else>
+              <ol class="list-decimal space-y-1 pl-4">
+                <li>登录华为云控制台 → 右上角用户名「我的凭证」→「访问密钥 (AK/SK)」→「新增访问密钥」下载凭证。</li>
+                <li>确保账号具备云解析服务 DNS 读写权限（如 <code class="font-mono">DNS Administrator</code>）。</li>
+                <li>根据域名所在华为云区域选择「国内版」或「国际版」。</li>
+              </ol>
+            </template>
+          </div>
+        </div>
+
         <div v-if="dnsForm.provider === 'cloudflare'">
-          <label class="mb-1 block text-xs font-medium text-slate-700">
+          <label for="dns-cf-token" class="mb-1 block text-xs font-medium text-slate-700">
             API Token {{ dnsEditing ? '（留空保持原 Token 不变）' : '*' }}
           </label>
           <input
+            id="dns-cf-token"
             v-model="dnsForm.api_token"
             type="password"
             :placeholder="dnsEditing ? '已加密存储，留空则不修改' : '具备 Zone:Read 与 DNS:Edit 权限的 API Token'"
@@ -1051,10 +1131,11 @@ onMounted(() => {
 
         <template v-else>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">
+            <label for="dns-hw-ak" class="mb-1 block text-xs font-medium text-slate-700">
               Access Key (AK) {{ dnsEditing ? '（留空保持原值）' : '*' }}
             </label>
             <input
+              id="dns-hw-ak"
               v-model="dnsForm.access_key"
               type="text"
               :placeholder="dnsEditing ? '留空保持原 AK 不变' : '华为云 IAM Access Key'"
@@ -1062,10 +1143,11 @@ onMounted(() => {
             />
           </div>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">
+            <label for="dns-hw-sk" class="mb-1 block text-xs font-medium text-slate-700">
               Secret Key (SK) {{ dnsEditing ? '（留空保持原值）' : '*' }}
             </label>
             <input
+              id="dns-hw-sk"
               v-model="dnsForm.secret_key"
               type="password"
               :placeholder="dnsEditing ? '留空保持原 SK 不变' : '华为云 IAM Secret Key'"
@@ -1127,9 +1209,40 @@ onMounted(() => {
             />
           </div>
         </template>
-      </div>
+
+        <!-- Inline Connectivity Test Result -->
+        <div
+          v-if="dnsInlineTestResult"
+          class="space-y-1.5 rounded-lg border p-3 text-xs"
+          :class="dnsInlineTestResult.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-rose-200 bg-rose-50 text-rose-800'"
+        >
+          <div class="font-semibold">{{ dnsInlineTestResult.ok ? '连通性校验通过' : '连通性校验失败' }}</div>
+          <div>{{ dnsInlineTestResult.message }}</div>
+          <div v-if="dnsInlineTestResult.zones && dnsInlineTestResult.zones.length > 0" class="flex flex-wrap gap-1.5 pt-1">
+            <span
+              v-for="z in dnsInlineTestResult.zones.slice(0, 8)"
+              :key="z.id"
+              class="rounded bg-white px-2 py-0.5 font-mono text-[11px] text-slate-700 ring-1 ring-emerald-200"
+            >
+              {{ z.name }}
+            </span>
+            <span v-if="dnsInlineTestResult.zones.length > 8" class="text-[11px] text-emerald-700">
+              等 {{ dnsInlineTestResult.zones.length }} 个域名
+            </span>
+          </div>
+        </div>
+      </form>
 
       <template #footer>
+        <button
+          type="button"
+          :disabled="dnsInlineTesting"
+          class="mr-auto inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+          @click="handleInlineTestDNS"
+        >
+          <FlaskConical class="h-3.5 w-3.5" />
+          {{ dnsInlineTesting ? '测试中...' : '测试连通性' }}
+        </button>
         <button
           type="button"
           class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
@@ -1138,10 +1251,10 @@ onMounted(() => {
           取消
         </button>
         <button
-          type="button"
+          type="submit"
+          form="dns-modal-form"
           :disabled="dnsSubmitting"
           class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          @click="submitDNS"
         >
           {{ dnsSubmitting ? '保存中...' : '保存凭据' }}
         </button>

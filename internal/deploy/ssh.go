@@ -14,12 +14,146 @@ import (
 	pathpkg "path"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
 	"ssl-center/internal/model"
 )
+
+type sshSessionKey struct{}
+
+type sshSessionHandle struct {
+	hostID   int64
+	hostAddr string
+	port     int
+	client   *ssh.Client
+	mu       sync.Mutex
+	sftp     *sftp.Client
+}
+
+func (h *sshSessionHandle) matches(host *model.Host) bool {
+	if h == nil || host == nil {
+		return false
+	}
+	if h.hostID > 0 && host.ID > 0 {
+		return h.hostID == host.ID
+	}
+	port := host.Port
+	if port <= 0 {
+		port = 22
+	}
+	return h.hostID == 0 && host.ID == 0 && h.hostAddr == strings.TrimSpace(host.Host) && h.port == port
+}
+
+func (h *sshSessionHandle) getSFTP() (*sftp.Client, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sftp != nil {
+		return h.sftp, nil
+	}
+	sc, err := sftp.NewClient(h.client)
+	if err != nil {
+		return nil, err
+	}
+	h.sftp = sc
+	return sc, nil
+}
+
+func (h *sshSessionHandle) closeAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sftp != nil {
+		_ = h.sftp.Close()
+		h.sftp = nil
+	}
+	if h.client != nil {
+		_ = h.client.Close()
+		h.client = nil
+	}
+}
+
+func (t *Transport) withSSHSession(ctx context.Context, host *model.Host, fn func(context.Context) error) error {
+	if existing, ok := ctx.Value(sshSessionKey{}).(*sshSessionHandle); ok && existing.matches(host) {
+		return fn(ctx)
+	}
+	client, _, cleanup, err := t.dialSSH(ctx, host)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return err
+	}
+	port := host.Port
+	if port <= 0 {
+		port = 22
+	}
+	handle := &sshSessionHandle{
+		hostID:   host.ID,
+		hostAddr: strings.TrimSpace(host.Host),
+		port:     port,
+		client:   client,
+	}
+	defer func() {
+		handle.closeAll()
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+	return fn(context.WithValue(ctx, sshSessionKey{}, handle))
+}
+
+func (t *Transport) acquireSSHClient(ctx context.Context, host *model.Host) (*ssh.Client, func(), error) {
+	if existing, ok := ctx.Value(sshSessionKey{}).(*sshSessionHandle); ok && existing.matches(host) && existing.client != nil {
+		return existing.client, func() {}, nil
+	}
+	client, _, cleanup, err := t.dialSSH(ctx, host)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return nil, nil, err
+	}
+	return client, func() {
+		_ = client.Close()
+		if cleanup != nil {
+			cleanup()
+		}
+	}, nil
+}
+
+func (t *Transport) acquireSFTP(ctx context.Context, host *model.Host) (*sftp.Client, func(), error) {
+	if existing, ok := ctx.Value(sshSessionKey{}).(*sshSessionHandle); ok && existing.matches(host) && existing.client != nil {
+		sc, err := existing.getSFTP()
+		if err != nil {
+			return nil, nil, t.redactErr(fmt.Errorf("open sftp session: %w", err))
+		}
+		return sc, func() {}, nil
+	}
+	client, _, cleanup, err := t.dialSSH(ctx, host)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return nil, nil, err
+	}
+	sc, err := sftp.NewClient(client)
+	if err != nil {
+		_ = client.Close()
+		if cleanup != nil {
+			cleanup()
+		}
+		return nil, nil, t.redactErr(fmt.Errorf("open sftp session: %w", err))
+	}
+	return sc, func() {
+		_ = sc.Close()
+		_ = client.Close()
+		if cleanup != nil {
+			cleanup()
+		}
+	}, nil
+}
 
 type sshConnectInfo struct {
 	observedFP    string
@@ -47,6 +181,21 @@ func (t *Transport) testSSHConnection(ctx context.Context, host *model.Host) (*m
 	}
 	defer client.Close()
 
+	handle := &sshSessionHandle{
+		hostID:   host.ID,
+		hostAddr: strings.TrimSpace(host.Host),
+		port:     host.Port,
+		client:   client,
+	}
+	defer func() {
+		handle.mu.Lock()
+		if handle.sftp != nil {
+			_ = handle.sftp.Close()
+			handle.sftp = nil
+		}
+		handle.mu.Unlock()
+	}()
+
 	res.SSHOK = true
 	res.HostKeyFingerprint = info.observedFP
 	res.HostKeyStatus = info.hostKeyStatus
@@ -57,76 +206,31 @@ func (t *Transport) testSSHConnection(ctx context.Context, host *model.Host) (*m
 		return res, nil
 	}
 
-	container := strings.TrimSpace(host.CaddyContainer)
-	if container == "" {
-		container = "caddy"
+	runner := func(cmd string) (*model.ExecResult, error) {
+		return t.execOnSSHClient(ctx, client, cmd, nil)
 	}
-	if err := model.ValidateContainerName(container); err != nil {
-		res.Message = t.redact(fmt.Sprintf("SSH connection succeeded; invalid Caddy container name: %v", err))
-		t.persistCheckResult(ctx, host, true, res.Message, caddyStatus)
-		return res, nil
-	}
-
-	infoRes, infoErr := t.execOnSSHClient(ctx, client, "docker info --format '{{.ServerVersion}}'", nil)
-	if isDockerDaemonAvailable(infoRes, infoErr) {
-		res.DockerOK = true
-		inspectCmd := fmt.Sprintf("docker inspect --format '{{.State.Running}}' %s", model.ShellQuote(container))
-		inspectRes, inspectErr := t.execOnSSHClient(ctx, client, inspectCmd, nil)
-		if inspectErr == nil && inspectRes != nil && inspectRes.ExitCode == 0 {
-			running := strings.EqualFold(strings.TrimSpace(inspectRes.Stdout), "true")
-			res.CaddyRunning = running
-			if running {
-				caddyStatus = model.CaddyStatusRunning
-				verCmd := fmt.Sprintf("docker exec %s caddy version", model.ShellQuote(container))
-				if verRes, verErr := t.execOnSSHClient(ctx, client, verCmd, nil); verErr == nil && verRes != nil && verRes.ExitCode == 0 {
-					res.CaddyVersion = strings.TrimSpace(verRes.Stdout)
-				}
-				res.Message = "SSH OK; Docker OK; Caddy container running"
-			} else {
-				caddyStatus = model.CaddyStatusStopped
-				res.Message = fmt.Sprintf("SSH OK; Docker OK; Caddy container %q is stopped", container)
-			}
-		} else {
-			caddyStatus = model.CaddyStatusUnknown
-			detail := ""
-			if inspectRes != nil {
-				detail = strings.TrimSpace(firstNonEmpty(inspectRes.Stderr, inspectRes.Stdout))
-			}
-			res.Message = fmt.Sprintf("SSH OK; Docker OK; Caddy container %q inspect failed: %s", container, detail)
+	existsFn := func(filePath string) *bool {
+		sc, sErr := handle.getSFTP()
+		if sErr != nil {
+			return nil
 		}
-	} else {
-		detail := ""
-		if infoErr != nil {
-			detail = infoErr.Error()
-		} else if infoRes != nil {
-			detail = strings.TrimSpace(firstNonEmpty(infoRes.Stderr, infoRes.Stdout))
-		}
-		if detail == "" {
-			detail = "empty server version from docker info"
-		}
-		res.Message = fmt.Sprintf("SSH OK; Docker unavailable: %s", detail)
+		_, statErr := sc.Stat(pathpkg.Clean(filePath))
+		exists := statErr == nil
+		return &exists
 	}
 
+	caddyStatus, _ = t.diagnoseCaddy(host, res, false, runner, existsFn)
 	res.Message = t.redact(res.Message)
 	t.persistCheckResult(ctx, host, true, res.Message, caddyStatus)
 	return res, nil
 }
 
 func (t *Transport) readSSHFile(ctx context.Context, host *model.Host, filePath string) ([]byte, error) {
-	client, _, cleanup, err := t.dialSSH(ctx, host)
-	if cleanup != nil {
-		defer cleanup()
-	}
+	sc, release, err := t.acquireSFTP(ctx, host)
 	if err != nil {
 		return nil, err
 	}
-	defer client.Close()
-
-	sc, err := sftp.NewClient(client)
-	if err != nil {
-		return nil, t.redactErr(fmt.Errorf("open sftp session: %w", err))
-	}
-	defer sc.Close()
+	defer release()
 
 	clean := pathpkg.Clean(filePath)
 	f, err := sc.Open(clean)
@@ -146,20 +250,11 @@ func (t *Transport) readSSHFile(ctx context.Context, host *model.Host, filePath 
 }
 
 func (t *Transport) writeSSHFileAtomic(ctx context.Context, host *model.Host, filePath string, data []byte, mode uint32) error {
-	client, _, cleanupSecrets, err := t.dialSSH(ctx, host)
-	if cleanupSecrets != nil {
-		defer cleanupSecrets()
-	}
+	sc, release, err := t.acquireSFTP(ctx, host)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
-
-	sc, err := sftp.NewClient(client)
-	if err != nil {
-		return t.redactErr(fmt.Errorf("open sftp session: %w", err))
-	}
-	defer sc.Close()
+	defer release()
 
 	clean := pathpkg.Clean(filePath)
 	dir := pathpkg.Dir(clean)
@@ -218,20 +313,11 @@ func (t *Transport) writeSSHFileAtomic(ctx context.Context, host *model.Host, fi
 }
 
 func (t *Transport) writeSSHFileInPlace(ctx context.Context, host *model.Host, filePath string, data []byte) error {
-	client, _, cleanup, err := t.dialSSH(ctx, host)
-	if cleanup != nil {
-		defer cleanup()
-	}
+	sc, release, err := t.acquireSFTP(ctx, host)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
-
-	sc, err := sftp.NewClient(client)
-	if err != nil {
-		return t.redactErr(fmt.Errorf("open sftp session: %w", err))
-	}
-	defer sc.Close()
+	defer release()
 
 	clean := pathpkg.Clean(filePath)
 	dir := pathpkg.Dir(clean)
@@ -256,20 +342,11 @@ func (t *Transport) writeSSHFileInPlace(ctx context.Context, host *model.Host, f
 }
 
 func (t *Transport) removeSSHFile(ctx context.Context, host *model.Host, filePath string) error {
-	client, _, cleanup, err := t.dialSSH(ctx, host)
-	if cleanup != nil {
-		defer cleanup()
-	}
+	sc, release, err := t.acquireSFTP(ctx, host)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
-
-	sc, err := sftp.NewClient(client)
-	if err != nil {
-		return t.redactErr(fmt.Errorf("open sftp session: %w", err))
-	}
-	defer sc.Close()
+	defer release()
 
 	clean := pathpkg.Clean(filePath)
 	if err := sc.Remove(clean); err != nil {
@@ -285,14 +362,11 @@ func (t *Transport) execSSH(ctx context.Context, host *model.Host, command strin
 	if strings.TrimSpace(command) == "" {
 		return nil, errors.New("command must not be empty")
 	}
-	client, _, cleanup, err := t.dialSSH(ctx, host)
-	if cleanup != nil {
-		defer cleanup()
-	}
+	client, release, err := t.acquireSSHClient(ctx, host)
 	if err != nil {
 		return nil, err
 	}
-	defer client.Close()
+	defer release()
 
 	return t.execOnSSHClient(ctx, client, command, stdin)
 }

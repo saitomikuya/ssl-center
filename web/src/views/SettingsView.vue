@@ -2,10 +2,13 @@
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
+  AlertTriangle,
   Bell,
   Clock,
   Download,
   Edit3,
+  Eye,
+  EyeOff,
   HardDriveDownload,
   KeyRound,
   Plus,
@@ -48,6 +51,7 @@ const settingsForm = reactive({
   expiring_warn_days: 7,
   log_retention_days: 30,
   log_max_rows: 5000,
+  timezone: 'Asia/Shanghai',
 })
 
 async function loadSettings() {
@@ -276,6 +280,9 @@ const pwdForm = reactive({
   new_password: '',
   confirm_password: '',
 })
+const showCurrentPwd = ref(false)
+const showNewPwd = ref(false)
+const showConfirmPwd = ref(false)
 const pwdSaving = ref(false)
 
 async function submitPasswordChange() {
@@ -426,26 +433,41 @@ onMounted(() => {
         <form class="space-y-4" @submit.prevent="saveSettings">
           <div class="grid gap-4 sm:grid-cols-2">
             <div>
-              <label class="mb-1 block text-xs font-medium text-slate-700">每日巡检时刻 (HH:MM)</label>
+              <div class="mb-1 flex items-center justify-between gap-2">
+                <label for="setting-inspect-time" class="block text-xs font-medium text-slate-700">每日巡检时刻 (HH:MM)</label>
+                <span class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
+                  {{ settingsForm.timezone || 'Asia/Shanghai' }}
+                </span>
+              </div>
               <input
+                id="setting-inspect-time"
                 v-model="settingsForm.inspect_time"
                 type="time"
                 class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm tabular-nums focus:border-indigo-500 focus:outline-none"
               />
             </div>
             <div>
-              <label class="mb-1 block text-xs font-medium text-slate-700">默认提前续期天数</label>
+              <label for="setting-renew-days" class="mb-1 block text-xs font-medium text-slate-700">默认提前续期天数</label>
               <input
+                id="setting-renew-days"
                 v-model.number="settingsForm.renew_before_days"
                 type="number"
                 min="1"
-                max="90"
+                max="80"
                 class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm tabular-nums focus:border-indigo-500 focus:outline-none"
               />
             </div>
+            <div
+              v-if="settingsForm.renew_before_days > 60"
+              class="sm:col-span-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+            >
+              <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <span>提前续期天数高于 60 天时可能导致 90 天有效期证书频繁触发续期，建议设为 15~30 天。</span>
+            </div>
             <div>
-              <label class="mb-1 block text-xs font-medium text-slate-700">临期告警阈值（天）</label>
+              <label for="setting-warn-days" class="mb-1 block text-xs font-medium text-slate-700">临期告警阈值（天）</label>
               <input
+                id="setting-warn-days"
                 v-model.number="settingsForm.expiring_warn_days"
                 type="number"
                 min="1"
@@ -454,8 +476,9 @@ onMounted(() => {
               />
             </div>
             <div>
-              <label class="mb-1 block text-xs font-medium text-slate-700">日志保留天数</label>
+              <label for="setting-log-days" class="mb-1 block text-xs font-medium text-slate-700">日志保留天数</label>
               <input
+                id="setting-log-days"
                 v-model.number="settingsForm.log_retention_days"
                 type="number"
                 min="1"
@@ -464,8 +487,9 @@ onMounted(() => {
               />
             </div>
             <div class="sm:col-span-2">
-              <label class="mb-1 block text-xs font-medium text-slate-700">单表最大日志保留行数</label>
+              <label for="setting-log-rows" class="mb-1 block text-xs font-medium text-slate-700">单表最大日志保留行数</label>
               <input
+                id="setting-log-rows"
                 v-model.number="settingsForm.log_max_rows"
                 type="number"
                 min="100"
@@ -519,31 +543,76 @@ onMounted(() => {
 
         <form class="space-y-4" @submit.prevent="submitPasswordChange">
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">当前密码</label>
-            <input
-              v-model="pwdForm.current_password"
-              type="password"
-              autocomplete="current-password"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-            />
+            <label for="pwd-current" class="mb-1 block text-xs font-medium text-slate-700">当前密码</label>
+            <div class="relative">
+              <input
+                id="pwd-current"
+                v-model="pwdForm.current_password"
+                :type="showCurrentPwd ? 'text' : 'password'"
+                autocomplete="current-password"
+                class="w-full rounded-lg border border-slate-300 py-2 pl-3 pr-9 text-sm focus:border-indigo-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                :aria-label="showCurrentPwd ? '隐藏当前密码' : '显示当前密码'"
+                class="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-400 hover:text-slate-600"
+                @click="showCurrentPwd = !showCurrentPwd"
+              >
+                <EyeOff v-if="showCurrentPwd" class="h-4 w-4" />
+                <Eye v-else class="h-4 w-4" />
+              </button>
+            </div>
           </div>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">新密码（至少 8 位）</label>
-            <input
-              v-model="pwdForm.new_password"
-              type="password"
-              autocomplete="new-password"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-            />
+            <div class="mb-1 flex items-center justify-between">
+              <label for="pwd-new" class="block text-xs font-medium text-slate-700">新密码（至少 8 位）</label>
+              <span
+                v-if="pwdForm.new_password"
+                class="text-[11px]"
+                :class="pwdForm.new_password.length >= 8 ? 'text-emerald-600' : 'text-amber-600'"
+              >
+                {{ pwdForm.new_password.length >= 8 ? '长度符合要求' : `还差 ${8 - pwdForm.new_password.length} 位` }}
+              </span>
+            </div>
+            <div class="relative">
+              <input
+                id="pwd-new"
+                v-model="pwdForm.new_password"
+                :type="showNewPwd ? 'text' : 'password'"
+                autocomplete="new-password"
+                class="w-full rounded-lg border border-slate-300 py-2 pl-3 pr-9 text-sm focus:border-indigo-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                :aria-label="showNewPwd ? '隐藏新密码' : '显示新密码'"
+                class="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-400 hover:text-slate-600"
+                @click="showNewPwd = !showNewPwd"
+              >
+                <EyeOff v-if="showNewPwd" class="h-4 w-4" />
+                <Eye v-else class="h-4 w-4" />
+              </button>
+            </div>
           </div>
           <div>
-            <label class="mb-1 block text-xs font-medium text-slate-700">确认新密码</label>
-            <input
-              v-model="pwdForm.confirm_password"
-              type="password"
-              autocomplete="new-password"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-            />
+            <label for="pwd-confirm" class="mb-1 block text-xs font-medium text-slate-700">确认新密码</label>
+            <div class="relative">
+              <input
+                id="pwd-confirm"
+                v-model="pwdForm.confirm_password"
+                :type="showConfirmPwd ? 'text' : 'password'"
+                autocomplete="new-password"
+                class="w-full rounded-lg border border-slate-300 py-2 pl-3 pr-9 text-sm focus:border-indigo-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                :aria-label="showConfirmPwd ? '隐藏确认密码' : '显示确认密码'"
+                class="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-400 hover:text-slate-600"
+                @click="showConfirmPwd = !showConfirmPwd"
+              >
+                <EyeOff v-if="showConfirmPwd" class="h-4 w-4" />
+                <Eye v-else class="h-4 w-4" />
+              </button>
+            </div>
           </div>
 
           <div class="flex justify-end border-t border-slate-100 pt-4">
@@ -675,6 +744,10 @@ onMounted(() => {
           <p class="mt-1 text-xs leading-relaxed text-slate-500">
             生成完整 <code>.tar.gz</code> 归档（含 SHA-256 校验清单），可用于跨主机迁移或灾备还原。
           </p>
+          <div class="mt-2.5 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+            <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+            <span>备份包内含主加密密钥、CA 账户私钥与证书私钥，请务必离线加密保存，切勿上传至公开网盘。</span>
+          </div>
           <button
             type="button"
             :disabled="exportingBackup"
@@ -719,11 +792,11 @@ onMounted(() => {
     <ModalDialog
       :open="webhookModalOpen"
       :title="editingWebhook ? '编辑 Webhook' : '新增 Webhook'"
-      subtitle="编辑时 Headers 与 HMAC Secret 留空则保持原加密值不变"
+      :subtitle="editingWebhook ? '编辑时 Headers 与 HMAC Secret 留空则保持原加密值不变' : '配置 HTTP 回调端点与订阅事件，保存后可点击「测试发送」验证接收'"
       max-width="xl"
       @close="webhookModalOpen = false"
     >
-      <div class="space-y-4">
+      <form id="webhook-modal-form" class="space-y-4" @submit.prevent="submitWebhook">
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
             <label class="mb-1 block text-xs font-medium text-slate-700">名称 *</label>
@@ -849,7 +922,7 @@ onMounted(() => {
             </label>
           </div>
         </div>
-      </div>
+      </form>
 
       <template #footer>
         <button
@@ -860,10 +933,10 @@ onMounted(() => {
           取消
         </button>
         <button
-          type="button"
+          type="submit"
+          form="webhook-modal-form"
           :disabled="webhookSaving"
           class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          @click="submitWebhook"
         >
           {{ webhookSaving ? '保存中...' : '保存 Webhook' }}
         </button>

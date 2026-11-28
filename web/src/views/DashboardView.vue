@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   Activity,
   AlertTriangle,
@@ -8,6 +9,7 @@ import {
   ChevronDown,
   ChevronUp,
   Circle,
+  ExternalLink,
   RefreshCw,
   Rocket,
   Server,
@@ -16,7 +18,9 @@ import {
 import { getDashboard } from '@/api/dashboard'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import type { ChecklistItem, DashboardResponse } from '@/types/api'
+import type { AuditEvent, ChecklistItem, DashboardResponse } from '@/types/api'
+
+const router = useRouter()
 
 const loading = ref(false)
 const errorMsg = ref('')
@@ -83,6 +87,98 @@ const filteredEvents = computed(() => {
   if (levelFilter.value === 'all') return events
   return events.filter((e) => e.level === levelFilter.value)
 })
+
+const levelCounts = computed(() => {
+  const events = data.value?.recent_events || []
+  return {
+    all: events.length,
+    info: events.filter((e) => e.level === 'info').length,
+    warn: events.filter((e) => e.level === 'warn').length,
+    error: events.filter((e) => e.level === 'error').length,
+  }
+})
+
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  'auth.login': '管理员登录',
+  'auth.login_failed': '登录失败',
+  'auth.logout': '退出登录',
+  'auth.password_changed': '修改密码',
+  'ca.created': '创建 CA 账户',
+  'ca.updated': '更新 CA 账户',
+  'ca.deleted': '删除 CA 账户',
+  'ca.default_set': '设为默认 CA',
+  'ca.key_exported': '导出 CA 密钥',
+  'dns.created': '创建 DNS 凭据',
+  'dns.updated': '更新 DNS 凭据',
+  'dns.deleted': '删除 DNS 凭据',
+  'cert.created': '创建证书',
+  'cert.updated': '更新证书',
+  'cert.deleted': '删除证书',
+  'cert.issued': '签发成功',
+  'cert.issue_failed': '签发失败',
+  'cert.renewed': '续期成功',
+  'cert.key_exported': '导出证书私钥',
+  'cert.bundle_downloaded': '下载证书包',
+  'host.created': '添加主机',
+  'host.updated': '更新主机',
+  'host.deleted': '删除主机',
+  'host.host_key_reset': '重置 SSH 指纹',
+  'host.host_key_mismatch': 'SSH 指纹异常',
+  'deployment.created': '创建部署目标',
+  'deployment.updated': '更新部署目标',
+  'deployment.deleted': '删除部署目标',
+  'caddy.published': '发布 Caddyfile',
+  'caddy.rolled_back': '回滚 Caddyfile',
+  'caddy.reloaded': '重载 Caddy',
+  'caddy.reload_failed': 'Caddy 重载失败',
+  'webhook.created': '创建 Webhook',
+  'webhook.updated': '更新 Webhook',
+  'webhook.deleted': '删除 Webhook',
+  'settings.updated': '更新系统设置',
+  'settings.logs_pruned': '清理历史日志',
+  'backup.exported': '导出备份',
+  'backup.restored': '恢复备份',
+}
+
+function formatEventType(ev: AuditEvent): string {
+  return EVENT_TYPE_LABELS[ev.event_type] || ev.event_type
+}
+
+function getAuditTargetRoute(ev: AuditEvent) {
+  if (!ev.target_id) {
+    if (ev.target_type === 'ca_account') return { path: '/credentials', query: { tab: 'ca' } }
+    if (ev.target_type === 'dns_credential') return { path: '/credentials', query: { tab: 'dns' } }
+    if (ev.target_type === 'settings' || ev.target_type === 'webhook') return { path: '/settings' }
+    return null
+  }
+  if (ev.target_type === 'certificate') {
+    return { path: '/certificates', query: { certId: String(ev.target_id) } }
+  }
+  if (ev.target_type === 'host') {
+    return { path: '/hosts', query: { hostId: String(ev.target_id) } }
+  }
+  if (ev.target_type === 'deployment') {
+    try {
+      const meta = ev.meta_json ? JSON.parse(ev.meta_json) : null
+      if (meta?.certificate_id) {
+        return { path: '/certificates', query: { certId: String(meta.certificate_id), tab: 'deployments' } }
+      }
+      if (meta?.host_id) {
+        return { path: '/hosts', query: { hostId: String(meta.host_id), tab: 'deployments' } }
+      }
+    } catch {
+      return { path: '/certificates' }
+    }
+  }
+  return null
+}
+
+function handleAuditClick(ev: AuditEvent) {
+  const target = getAuditTargetRoute(ev)
+  if (target) {
+    void router.push(target)
+  }
+}
 </script>
 
 <template>
@@ -141,7 +237,7 @@ const filteredEvents = computed(() => {
                 {{ completedChecklistCount }}/{{ checklistItems.length }}
               </span>
             </div>
-            <p class="text-xs text-slate-500">按顺序完成 CA、DNS、证书、部署目标与告警配置</p>
+            <p class="text-xs text-slate-500">按顺序完成 CA、DNS、主机、证书与部署目标配置</p>
           </div>
         </div>
         <div class="flex items-center gap-2 text-xs font-medium text-slate-500">
@@ -339,7 +435,7 @@ const filteredEvents = computed(() => {
             ] as const"
             :key="lv.id"
             type="button"
-            class="rounded-md px-2.5 py-1 transition"
+            class="inline-flex items-center gap-1 rounded-md px-2.5 py-1 transition"
             :class="
               levelFilter === lv.id
                 ? 'bg-white text-slate-900 shadow-sm'
@@ -347,7 +443,8 @@ const filteredEvents = computed(() => {
             "
             @click="levelFilter = lv.id"
           >
-            {{ lv.label }}
+            <span>{{ lv.label }}</span>
+            <span class="text-[11px] text-slate-400 tabular-nums">{{ levelCounts[lv.id] }}</span>
           </button>
         </div>
       </div>
@@ -362,17 +459,26 @@ const filteredEvents = computed(() => {
         <div
           v-for="ev in filteredEvents"
           :key="ev.id"
-          class="flex flex-col gap-2 px-5 py-3.5 transition hover:bg-slate-50/80 sm:flex-row sm:items-center sm:justify-between"
+          class="flex flex-col gap-2 px-5 py-3.5 transition sm:flex-row sm:items-center sm:justify-between"
+          :class="getAuditTargetRoute(ev) ? 'cursor-pointer hover:bg-indigo-50/40' : 'hover:bg-slate-50/80'"
+          @click="handleAuditClick(ev)"
         >
           <div class="min-w-0 flex-1 space-y-1">
             <div class="flex flex-wrap items-center gap-2">
               <StatusBadge :status="ev.level" />
-              <span class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-medium text-slate-700">
-                {{ ev.event_type }}
+              <span
+                class="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700"
+                :title="ev.event_type"
+              >
+                {{ formatEventType(ev) }}
               </span>
               <span v-if="ev.target_name" class="text-xs font-semibold text-slate-800">
                 {{ ev.target_name }}
               </span>
+              <ExternalLink
+                v-if="getAuditTargetRoute(ev)"
+                class="h-3 w-3 text-slate-400"
+              />
             </div>
             <p class="text-sm text-slate-600 break-words">{{ ev.message }}</p>
           </div>

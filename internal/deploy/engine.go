@@ -222,19 +222,35 @@ func (e *Engine) deployOne(
 	certMode := parseFileMode(dep.CertFileMode, 0o644)
 	keyMode := parseFileMode(dep.KeyFileMode, 0o600)
 
-	if err := e.transport.WriteFileAtomic(ctx, host, fullchainPath, fullchainBytes, certMode); err != nil {
-		return finishFail(fmt.Sprintf("write fullchain %s: %v", fullchainPath, err), nil, "", "", false, "")
-	}
-	if err := e.transport.WriteFileAtomic(ctx, host, privkeyPath, privkeyBytes, keyMode); err != nil {
-		return finishFail(fmt.Sprintf("write privkey %s: %v", privkeyPath, err), nil, "", "", false, "")
-	}
-	if issuerPath != "" && len(issuerBytes) > 0 {
-		if err := e.transport.WriteFileAtomic(ctx, host, issuerPath, issuerBytes, certMode); err != nil {
-			return finishFail(fmt.Sprintf("write issuer %s: %v", issuerPath, err), nil, "", "", false, "")
+	var (
+		exitCode  *int
+		stdout    string
+		stderr    string
+		reloadErr error
+		writeErr  error
+	)
+	_ = model.WithTransportSession(ctx, e.transport, host, func(sCtx context.Context) error {
+		if err := e.transport.WriteFileAtomic(sCtx, host, fullchainPath, fullchainBytes, certMode); err != nil {
+			writeErr = fmt.Errorf("write fullchain %s: %w", fullchainPath, err)
+			return writeErr
 		}
-	}
+		if err := e.transport.WriteFileAtomic(sCtx, host, privkeyPath, privkeyBytes, keyMode); err != nil {
+			writeErr = fmt.Errorf("write privkey %s: %w", privkeyPath, err)
+			return writeErr
+		}
+		if issuerPath != "" && len(issuerBytes) > 0 {
+			if err := e.transport.WriteFileAtomic(sCtx, host, issuerPath, issuerBytes, certMode); err != nil {
+				writeErr = fmt.Errorf("write issuer %s: %w", issuerPath, err)
+				return writeErr
+			}
+		}
 
-	exitCode, stdout, stderr, reloadErr := e.executeReload(ctx, cert, dep, host, fullchainPath, privkeyPath)
+		exitCode, stdout, stderr, reloadErr = e.executeReload(sCtx, cert, dep, host, fullchainPath, privkeyPath)
+		return nil
+	})
+	if writeErr != nil {
+		return finishFail(writeErr.Error(), nil, "", "", false, "")
+	}
 	if reloadErr != nil {
 		return finishFail(reloadErr.Error(), exitCode, stdout, stderr, false, "")
 	}

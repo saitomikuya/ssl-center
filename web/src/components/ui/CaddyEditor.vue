@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { basicSetup } from 'codemirror'
 import { EditorView, keymap, Decoration, type DecorationSet } from '@codemirror/view'
-import { EditorState, StateEffect, StateField } from '@codemirror/state'
+import { Compartment, EditorState, StateEffect, StateField } from '@codemirror/state'
 import { StreamLanguage, HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 
@@ -11,10 +11,12 @@ const props = withDefaults(
     modelValue: string
     errorLine?: number | null
     readonly?: boolean
+    lineWrap?: boolean
   }>(),
   {
     errorLine: null,
     readonly: false,
+    lineWrap: false,
   },
 )
 
@@ -24,6 +26,7 @@ const emit = defineEmits<{
 }>()
 
 const containerRef = ref<HTMLDivElement | null>(null)
+const wrapCompartment = new Compartment()
 let view: EditorView | null = null
 let syncingFromProp = false
 
@@ -238,6 +241,7 @@ onMounted(() => {
       syntaxHighlighting(caddyHighlight),
       editorTheme,
       errorLineField,
+      wrapCompartment.of(props.lineWrap ? EditorView.lineWrapping : []),
       EditorState.readOnly.of(props.readonly),
       keymap.of([
         {
@@ -285,6 +289,16 @@ watch(
   () => props.errorLine,
   (line) => {
     applyErrorLine(line ?? null)
+  },
+)
+
+watch(
+  () => props.lineWrap,
+  (wrap) => {
+    if (!view) return
+    view.dispatch({
+      effects: wrapCompartment.reconfigure(wrap ? EditorView.lineWrapping : []),
+    })
   },
 )
 

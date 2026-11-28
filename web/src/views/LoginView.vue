@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Eye, EyeOff, Lock, ShieldCheck } from 'lucide-vue-next'
 import { login } from '@/api/auth'
@@ -11,12 +11,17 @@ import type { RateLimitDetails } from '@/types/api'
 const route = useRoute()
 const router = useRouter()
 
+const passwordInputRef = ref<HTMLInputElement | null>(null)
 const password = ref('')
 const showPassword = ref(false)
 const loading = ref(false)
 const errorMsg = ref('')
 const retrySeconds = ref(0)
 let countdownTimer: number | null = null
+
+onMounted(() => {
+  passwordInputRef.value?.focus()
+})
 
 function startCountdown(seconds: number) {
   if (countdownTimer) window.clearInterval(countdownTimer)
@@ -89,6 +94,16 @@ async function handleSubmit() {
       </div>
 
       <form class="space-y-5" @submit.prevent="handleSubmit">
+        <input
+          type="text"
+          name="username"
+          value="admin"
+          autocomplete="username"
+          tabindex="-1"
+          aria-hidden="true"
+          class="sr-only"
+          readonly
+        />
         <div>
           <label for="login-password" class="mb-1.5 block text-sm font-medium text-slate-700">
             管理员密码
@@ -99,7 +114,9 @@ async function handleSubmit() {
             </div>
             <input
               id="login-password"
+              ref="passwordInputRef"
               v-model="password"
+              name="password"
               :type="showPassword ? 'text' : 'password'"
               autocomplete="current-password"
               placeholder="请输入管理员密码"
@@ -107,6 +124,7 @@ async function handleSubmit() {
             />
             <button
               type="button"
+              :aria-label="showPassword ? '隐藏密码' : '显示密码'"
               class="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400 hover:text-slate-600"
               @click="showPassword = !showPassword"
             >

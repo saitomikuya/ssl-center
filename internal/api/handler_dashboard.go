@@ -58,7 +58,7 @@ func (h *DashboardHandler) Get(w http.ResponseWriter, r *http.Request) {
 			Key:   "dns_credential",
 			Title: "配置 DNS 解析凭据",
 			Done:  len(dnss) > 0,
-			Href:  "/credentials",
+			Href:  "/credentials?tab=dns",
 		},
 		{
 			Key:   "host",
@@ -76,7 +76,7 @@ func (h *DashboardHandler) Get(w http.ResponseWriter, r *http.Request) {
 			Key:   "deployment",
 			Title: "绑定自动化部署目标",
 			Done:  deployStats.Total > 0,
-			Href:  "/hosts",
+			Href:  "/certificates",
 		},
 	}
 

@@ -267,6 +267,33 @@ func (d *DB) CountDeploymentsByHost(ctx context.Context, hostID int64) (int, err
 	return count, err
 }
 
+// CountDeploymentsByHostMap returns deployment counts grouped by host_id in a single query.
+func (d *DB) CountDeploymentsByHostMap(ctx context.Context) (map[int64]int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlDB, err := d.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := sqlDB.QueryContext(ctx, `SELECT host_id, COUNT(*) FROM deployments GROUP BY host_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var hostID int64
+		var count int
+		if err := rows.Scan(&hostID, &count); err != nil {
+			return nil, err
+		}
+		counts[hostID] = count
+	}
+	return counts, rows.Err()
+}
+
 func scanHost(r rowScanner) (*model.Host, error) {
 	var h model.Host
 	var isLocal, caddyEnabled int

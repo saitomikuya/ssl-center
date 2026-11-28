@@ -109,21 +109,29 @@ func (m *Manager) GetCaddyfile(ctx context.Context, hostID int64) (*model.Caddyf
 		return nil, err
 	}
 
-	raw, err := m.transport.ReadFile(ctx, host, hostPath)
-	if err != nil {
-		return nil, fmt.Errorf("read caddyfile %s: %w", hostPath, err)
-	}
+	var resp *model.CaddyfileResponse
+	err = model.WithTransportSession(ctx, m.transport, host, func(sCtx context.Context) error {
+		raw, rErr := m.transport.ReadFile(sCtx, host, hostPath)
+		if rErr != nil {
+			return fmt.Errorf("read caddyfile %s: %w", hostPath, rErr)
+		}
 
-	mountType := m.detectMountType(ctx, host, containerName, containerPath)
-	return &model.CaddyfileResponse{
-		HostID:            host.ID,
-		HostName:          host.Name,
-		Content:           string(raw),
-		SHA256:            sha256Hex(raw),
-		MountType:         mountType,
-		HostCaddyfilePath: hostPath,
-		ContainerName:     containerName,
-	}, nil
+		mountType := m.detectMountType(sCtx, host, containerName, containerPath)
+		resp = &model.CaddyfileResponse{
+			HostID:            host.ID,
+			HostName:          host.Name,
+			Content:           string(raw),
+			SHA256:            sha256Hex(raw),
+			MountType:         mountType,
+			HostCaddyfilePath: hostPath,
+			ContainerName:     containerName,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // SaveCaddyfile performs conflict detection, mount-aware validation, baseline snapshotting,
@@ -134,35 +142,44 @@ func (m *Manager) SaveCaddyfile(ctx context.Context, hostID int64, req model.Sav
 		return nil, err
 	}
 
-	remoteBytes, hadLive, err := m.readLiveOptional(ctx, host, hostPath)
-	if err != nil {
-		return nil, fmt.Errorf("read live caddyfile %s: %w", hostPath, err)
-	}
-	remoteContent := string(remoteBytes)
-	remoteSHA := ""
-	if hadLive {
-		remoteSHA = sha256Hex(remoteBytes)
-	}
-
-	if !req.Force && hadLive && req.ExpectedSHA256 != remoteSHA {
-		return nil, &ConflictError{
-			Details: model.CaddyConflictDetails{
-				ExpectedSHA256: req.ExpectedSHA256,
-				RemoteSHA256:   remoteSHA,
-				RemoteContent:  remoteContent,
-			},
+	var resp *model.CaddySaveResponse
+	err = model.WithTransportSession(ctx, m.transport, host, func(sCtx context.Context) error {
+		remoteBytes, hadLive, rErr := m.readLiveOptional(sCtx, host, hostPath)
+		if rErr != nil {
+			return fmt.Errorf("read live caddyfile %s: %w", hostPath, rErr)
 		}
+		remoteContent := string(remoteBytes)
+		remoteSHA := ""
+		if hadLive {
+			remoteSHA = sha256Hex(remoteBytes)
+		}
+
+		if !req.Force && hadLive && req.ExpectedSHA256 != remoteSHA {
+			return &ConflictError{
+				Details: model.CaddyConflictDetails{
+					ExpectedSHA256: req.ExpectedSHA256,
+					RemoteSHA256:   remoteSHA,
+					RemoteContent:  remoteContent,
+				},
+			}
+		}
+
+		mountType := m.detectMountType(sCtx, host, containerName, containerPath)
+
+		summary := strings.TrimSpace(req.Summary)
+		if summary == "" {
+			summary = "Publish Caddyfile"
+		}
+
+		var pubErr error
+		resp, pubErr = m.validateAndPublish(sCtx, host, hostPath, containerPath, containerName, mountType,
+			remoteBytes, remoteSHA, hadLive, req.Content, model.CaddyActionPublish, summary, actorIP)
+		return pubErr
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	mountType := m.detectMountType(ctx, host, containerName, containerPath)
-
-	summary := strings.TrimSpace(req.Summary)
-	if summary == "" {
-		summary = "Publish Caddyfile"
-	}
-
-	return m.validateAndPublish(ctx, host, hostPath, containerPath, containerName, mountType,
-		remoteBytes, remoteSHA, hadLive, req.Content, model.CaddyActionPublish, summary, actorIP)
+	return resp, nil
 }
 
 // Format formats candidate Caddyfile content using `caddy fmt -` inside the container via stdin.
@@ -198,24 +215,33 @@ func (m *Manager) Validate(ctx context.Context, hostID int64, content string) (*
 		return nil, err
 	}
 
-	mountType := m.detectMountType(ctx, host, containerName, containerPath)
-	out, vErr := m.runValidate(ctx, host, hostPath, containerPath, containerName, mountType, content)
-	if vErr != nil {
-		var ve *ValidateError
-		if errors.As(vErr, &ve) {
-			return &model.CaddyValidateResponse{
-				Valid:   false,
-				Output:  ve.Details.Output,
-				Line:    ve.Details.Line,
-				Message: ve.Details.Message,
-			}, nil
+	var resp *model.CaddyValidateResponse
+	err = model.WithTransportSession(ctx, m.transport, host, func(sCtx context.Context) error {
+		mountType := m.detectMountType(sCtx, host, containerName, containerPath)
+		out, vErr := m.runValidate(sCtx, host, hostPath, containerPath, containerName, mountType, content)
+		if vErr != nil {
+			var ve *ValidateError
+			if errors.As(vErr, &ve) {
+				resp = &model.CaddyValidateResponse{
+					Valid:   false,
+					Output:  ve.Details.Output,
+					Line:    ve.Details.Line,
+					Message: ve.Details.Message,
+				}
+				return nil
+			}
+			return vErr
 		}
-		return nil, vErr
+		resp = &model.CaddyValidateResponse{
+			Valid:  true,
+			Output: out,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return &model.CaddyValidateResponse{
-		Valid:  true,
-		Output: out,
-	}, nil
+	return resp, nil
 }
 
 // ReloadOnly runs `docker exec '<container>' caddy reload --config '<container_caddyfile>' --force`.
@@ -331,20 +357,29 @@ func (m *Manager) Rollback(ctx context.Context, hostID, snapID int64, actorIP st
 		return nil, ErrSnapshotHostMismatch
 	}
 
-	remoteBytes, hadLive, err := m.readLiveOptional(ctx, host, hostPath)
+	var resp *model.CaddySaveResponse
+	err = model.WithTransportSession(ctx, m.transport, host, func(sCtx context.Context) error {
+		remoteBytes, hadLive, rErr := m.readLiveOptional(sCtx, host, hostPath)
+		if rErr != nil {
+			return fmt.Errorf("read live caddyfile %s: %w", hostPath, rErr)
+		}
+		remoteSHA := ""
+		if hadLive {
+			remoteSHA = sha256Hex(remoteBytes)
+		}
+
+		mountType := m.detectMountType(sCtx, host, containerName, containerPath)
+		summary := fmt.Sprintf("Rollback to v%d", snap.Version)
+
+		var pubErr error
+		resp, pubErr = m.validateAndPublish(sCtx, host, hostPath, containerPath, containerName, mountType,
+			remoteBytes, remoteSHA, hadLive, snap.Content, model.CaddyActionRollback, summary, actorIP)
+		return pubErr
+	})
 	if err != nil {
-		return nil, fmt.Errorf("read live caddyfile %s: %w", hostPath, err)
+		return nil, err
 	}
-	remoteSHA := ""
-	if hadLive {
-		remoteSHA = sha256Hex(remoteBytes)
-	}
-
-	mountType := m.detectMountType(ctx, host, containerName, containerPath)
-	summary := fmt.Sprintf("Rollback to v%d", snap.Version)
-
-	return m.validateAndPublish(ctx, host, hostPath, containerPath, containerName, mountType,
-		remoteBytes, remoteSHA, hadLive, snap.Content, model.CaddyActionRollback, summary, actorIP)
+	return resp, nil
 }
 
 // ContainerInfo inspects the host's Caddy Docker container and retrieves sanitized tail logs.
@@ -373,39 +408,42 @@ func (m *Manager) ContainerInfo(ctx context.Context, hostID int64, tailLines int
 		info.MountType = MountTypeLocal
 	}
 
-	inspectCmd := fmt.Sprintf("docker inspect --format '{{json .}}' %s", model.ShellQuote(containerName))
-	inspectRes, inspectErr := m.transport.Exec(ctx, host, inspectCmd)
-	if inspectErr == nil && inspectRes != nil && inspectRes.ExitCode == 0 {
-		if obj, parseErr := parseDockerInspect(inspectRes.Stdout); parseErr == nil {
-			if obj.State.Status != "" {
-				info.Status = obj.State.Status
-			} else if obj.State.Running {
-				info.Status = model.CaddyStatusRunning
-			} else {
-				info.Status = model.CaddyStatusStopped
+	_ = model.WithTransportSession(ctx, m.transport, host, func(sCtx context.Context) error {
+		inspectCmd := fmt.Sprintf("docker inspect --format '{{json .}}' %s", model.ShellQuote(containerName))
+		inspectRes, inspectErr := m.transport.Exec(sCtx, host, inspectCmd)
+		if inspectErr == nil && inspectRes != nil && inspectRes.ExitCode == 0 {
+			if obj, parseErr := parseDockerInspect(inspectRes.Stdout); parseErr == nil {
+				if obj.State.Status != "" {
+					info.Status = obj.State.Status
+				} else if obj.State.Running {
+					info.Status = model.CaddyStatusRunning
+				} else {
+					info.Status = model.CaddyStatusStopped
+				}
+				info.Running = obj.State.Running
+				info.Image = obj.Config.Image
+				info.MountType = resolveMountTypeFromMounts(obj.Mounts, containerPath, host.Mode)
+				for _, mt := range obj.Mounts {
+					info.Mounts = append(info.Mounts, fmt.Sprintf("%s: %s -> %s (rw=%v)", mt.Type, mt.Source, mt.Destination, mt.RW))
+				}
 			}
-			info.Running = obj.State.Running
-			info.Image = obj.Config.Image
-			info.MountType = resolveMountTypeFromMounts(obj.Mounts, containerPath, host.Mode)
-			for _, mt := range obj.Mounts {
-				info.Mounts = append(info.Mounts, fmt.Sprintf("%s: %s -> %s (rw=%v)", mt.Type, mt.Source, mt.Destination, mt.RW))
+		} else {
+			errText := m.redact(formatExecOutput(inspectRes, inspectErr))
+			if errText != "" {
+				info.Logs = errText
 			}
 		}
-	} else {
-		errText := m.redact(formatExecOutput(inspectRes, inspectErr))
-		if errText != "" {
-			info.Logs = errText
-		}
-	}
 
-	logsCmd := fmt.Sprintf("docker logs --tail %d %s", tailLines, model.ShellQuote(containerName))
-	logsRes, logsErr := m.transport.Exec(ctx, host, logsCmd)
-	if logsErr == nil && logsRes != nil {
-		combined := combineExecOutput(logsRes)
-		info.Logs = m.redact(combined)
-	} else if logsErr != nil && info.Logs == "" {
-		info.Logs = m.redact(logsErr.Error())
-	}
+		logsCmd := fmt.Sprintf("docker logs --tail %d %s", tailLines, model.ShellQuote(containerName))
+		logsRes, logsErr := m.transport.Exec(sCtx, host, logsCmd)
+		if logsErr == nil && logsRes != nil {
+			combined := combineExecOutput(logsRes)
+			info.Logs = m.redact(combined)
+		} else if logsErr != nil && info.Logs == "" {
+			info.Logs = m.redact(logsErr.Error())
+		}
+		return nil
+	})
 
 	return info, nil
 }
